@@ -1,0 +1,382 @@
+"""CV file parser — extracts raw text and structured CVData from uploaded files.
+
+Supports: PDF (via PyMuPDF), DOCX (via python-docx), TXT.
+All parsing is fully local — no network calls.
+
+CVData schema (TypedDict-style for reference):
+{
+    "name": str,
+    "email": str,
+    "phone": str,
+    "location": str,
+    "linkedin": str,
+    "website": str,
+    "summary": str,
+    "experience": [{"title", "company", "location", "start_date", "end_date", "bullets": [str]}],
+    "education":  [{"degree", "institution", "location", "year", "gpa", "honors"}],
+    "skills":     {"categories": [{"name": str, "items": [str]}]},
+    "certifications": [{"name", "issuer", "date"}],
+    "languages":  [str],
+    "projects":   [{"name", "description", "technologies": [str]}],
+    "raw_text":   str,
+}
+"""
+
+from __future__ import annotations
+
+import io
+import re
+from pathlib import Path
+from typing import BinaryIO
+
+
+# ── Text extraction ────────────────────────────────────────────────────────────
+
+def extract_text_from_pdf(file: BinaryIO) -> str:
+    import fitz  # PyMuPDF
+    data = file.read()
+    doc = fitz.open(stream=data, filetype="pdf")
+    pages = [page.get_text("text") for page in doc]
+    doc.close()
+    return "\n".join(pages)
+
+
+def extract_text_from_docx(file: BinaryIO) -> str:
+    from docx import Document
+    doc = Document(io.BytesIO(file.read()))
+    parts = []
+    for para in doc.paragraphs:
+        parts.append(para.text)
+    # Also grab table cells
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                parts.append(cell.text)
+    return "\n".join(parts)
+
+
+def extract_text_from_txt(file: BinaryIO) -> str:
+    raw = file.read()
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode("latin-1", errors="replace")
+
+
+def extract_text(file: BinaryIO, filename: str) -> str:
+    ext = Path(filename).suffix.lower()
+    if ext == ".pdf":
+        return extract_text_from_pdf(file)
+    elif ext == ".docx":
+        return extract_text_from_docx(file)
+    else:
+        return extract_text_from_txt(file)
+
+
+# ── Regex helpers ─────────────────────────────────────────────────────────────
+
+_EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
+_PHONE_RE = re.compile(
+    r"(?:\+?\d{1,3}[\s\-.]?)?"
+    r"(?:\(?\d{2,4}\)?[\s\-.]?)?"
+    r"\d{3,4}[\s\-.]?\d{3,4}"
+)
+_LINKEDIN_RE = re.compile(r"(?:linkedin\.com/in/|linkedin:\s*)([A-Za-z0-9\-]+)", re.I)
+_URL_RE = re.compile(r"https?://[^\s]+")
+_DATE_RE = re.compile(
+    r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+    r"Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+    r"[\s,]+\d{4}"
+    r"|"
+    r"\d{1,2}/\d{4}"
+    r"|"
+    r"\d{4}",
+    re.I,
+)
+
+# Section heading detection — covers common variations
+_SECTION_PATTERNS: list[tuple[str, re.Pattern]] = [
+    ("summary",        re.compile(r"^\s*(summary|profile|objective|about me|professional summary)\s*$", re.I | re.M)),
+    ("experience",     re.compile(r"^\s*(experience|work experience|employment|work history|career history|professional experience)\s*$", re.I | re.M)),
+    ("education",      re.compile(r"^\s*(education|academic|qualifications|academic background)\s*$", re.I | re.M)),
+    ("skills",         re.compile(r"^\s*(skills|technical skills|core competencies|competencies|expertise)\s*$", re.I | re.M)),
+    ("certifications", re.compile(r"^\s*(certifications?|licenses?|credentials|accreditations?)\s*$", re.I | re.M)),
+    ("languages",      re.compile(r"^\s*(languages?)\s*$", re.I | re.M)),
+    ("projects",       re.compile(r"^\s*(projects?|personal projects?|key projects?)\s*$", re.I | re.M)),
+    ("publications",   re.compile(r"^\s*(publications?|papers?|research)\s*$", re.I | re.M)),
+    ("awards",         re.compile(r"^\s*(awards?|honors?|achievements?|recognitions?)\s*$", re.I | re.M)),
+    ("volunteer",      re.compile(r"^\s*(volunteer|volunteering|community|civic)\s*$", re.I | re.M)),
+]
+
+
+# ── Section splitter ──────────────────────────────────────────────────────────
+
+def _split_into_sections(text: str) -> dict[str, str]:
+    """Split raw CV text into named sections."""
+    lines = text.splitlines()
+    sections: dict[str, list[str]] = {"header": []}
+    current = "header"
+
+    for line in lines:
+        matched = False
+        for section_name, pattern in _SECTION_PATTERNS:
+            if pattern.match(line):
+                current = section_name
+                sections.setdefault(current, [])
+                matched = True
+                break
+        if not matched:
+            sections.setdefault(current, []).append(line)
+
+    return {k: "\n".join(v).strip() for k, v in sections.items()}
+
+
+# ── Contact extraction ────────────────────────────────────────────────────────
+
+def _extract_contact(header_text: str) -> dict:
+    lines = [l.strip() for l in header_text.splitlines() if l.strip()]
+
+    email = ""
+    em = _EMAIL_RE.search(header_text)
+    if em:
+        email = em.group(0)
+
+    phone = ""
+    ph = _PHONE_RE.search(header_text)
+    if ph:
+        phone = ph.group(0).strip()
+
+    linkedin = ""
+    li = _LINKEDIN_RE.search(header_text)
+    if li:
+        linkedin = f"linkedin.com/in/{li.group(1)}"
+
+    website = ""
+    for url in _URL_RE.finditer(header_text):
+        u = url.group(0)
+        if "linkedin" not in u.lower():
+            website = u
+            break
+
+    # Name heuristic: longest line in first 5 lines that isn't contact info
+    name = ""
+    contact_tokens = {email, phone, linkedin, website}
+    for line in lines[:5]:
+        if line and not any(tok in line for tok in contact_tokens if tok):
+            if not _EMAIL_RE.search(line) and not _PHONE_RE.search(line):
+                if len(line) > len(name):
+                    name = line
+
+    # Location: look for "City, State/Country" pattern
+    location = ""
+    loc_re = re.compile(r"[A-Z][a-z]+(?:,\s*[A-Z][a-z]+)+")
+    loc_m = loc_re.search(header_text)
+    if loc_m:
+        location = loc_m.group(0)
+
+    return {
+        "name": name,
+        "email": email,
+        "phone": phone,
+        "location": location,
+        "linkedin": linkedin,
+        "website": website,
+    }
+
+
+# ── Experience parser ─────────────────────────────────────────────────────────
+
+def _parse_experience(text: str) -> list[dict]:
+    if not text:
+        return []
+    entries = []
+    # Split on blank lines or date-like patterns indicating new entry
+    blocks = re.split(r"\n{2,}", text)
+    for block in blocks:
+        lines = [l.strip() for l in block.splitlines() if l.strip()]
+        if not lines:
+            continue
+
+        title, company, location, start_date, end_date = "", "", "", "", ""
+        bullets = []
+
+        for line in lines:
+            if line.startswith(("•", "-", "–", "*", "·")):
+                bullets.append(re.sub(r"^[•\-–*·]\s*", "", line))
+                continue
+            # Try to extract dates
+            dates = _DATE_RE.findall(line)
+            if dates and (len(dates) >= 2 or "present" in line.lower() or "current" in line.lower()):
+                start_date = dates[0] if dates else ""
+                end_date = dates[1] if len(dates) > 1 else ("Present" if "present" in line.lower() else "")
+                # remainder might be title/company
+                remainder = _DATE_RE.sub("", line).strip(" –-|·")
+                if remainder and not title:
+                    parts = re.split(r"[|·,]", remainder)
+                    title = parts[0].strip() if parts else remainder
+                    company = parts[1].strip() if len(parts) > 1 else ""
+                continue
+            if not title:
+                title = line
+            elif not company:
+                company = line
+            elif not location:
+                # Simple location heuristic
+                if any(c.isalpha() for c in line) and len(line) < 50:
+                    location = line
+
+        if title or bullets:
+            entries.append({
+                "title": title,
+                "company": company,
+                "location": location,
+                "start_date": start_date,
+                "end_date": end_date,
+                "bullets": bullets,
+            })
+    return entries
+
+
+# ── Education parser ──────────────────────────────────────────────────────────
+
+def _parse_education(text: str) -> list[dict]:
+    if not text:
+        return []
+    entries = []
+    blocks = re.split(r"\n{2,}", text)
+    for block in blocks:
+        lines = [l.strip() for l in block.splitlines() if l.strip()]
+        if not lines:
+            continue
+        degree, institution, location, year, gpa, honors = "", "", "", "", "", ""
+        for line in lines:
+            dates = _DATE_RE.findall(line)
+            if dates:
+                year = dates[-1]
+            if re.search(r"\b(bachelor|master|phd|mba|b\.s|m\.s|b\.a|m\.a|bsc|msc|md|jd)\b", line, re.I):
+                degree = line
+            elif re.search(r"\b(university|college|institute|school|academy)\b", line, re.I):
+                institution = line
+            elif re.search(r"\bgpa\b", line, re.I):
+                gpa = line
+            elif re.search(r"\b(honor|cum laude|distinction)\b", line, re.I):
+                honors = line
+        if degree or institution:
+            entries.append({
+                "degree": degree,
+                "institution": institution,
+                "location": location,
+                "year": year,
+                "gpa": gpa,
+                "honors": honors,
+            })
+    return entries
+
+
+# ── Skills parser ─────────────────────────────────────────────────────────────
+
+def _parse_skills(text: str) -> dict:
+    if not text:
+        return {"categories": [{"name": "Skills", "items": []}]}
+    categories = []
+    blocks = re.split(r"\n{2,}", text)
+    for block in blocks:
+        lines = [l.strip() for l in block.splitlines() if l.strip()]
+        if not lines:
+            continue
+        # If first line looks like a category label (short, no punctuation at end)
+        if len(lines[0]) < 40 and not lines[0].endswith((".", ",", ";")):
+            cat_name = lines[0].rstrip(":")
+            items_text = " ".join(lines[1:])
+        else:
+            cat_name = "Skills"
+            items_text = " ".join(lines)
+        # Split items by comma, pipe, semicolon, or bullet
+        items = [
+            i.strip(" •-–*·")
+            for i in re.split(r"[,|;•·\n]", items_text)
+            if i.strip(" •-–*·")
+        ]
+        if items:
+            categories.append({"name": cat_name, "items": items})
+    return {"categories": categories if categories else [{"name": "Skills", "items": []}]}
+
+
+# ── Certifications parser ─────────────────────────────────────────────────────
+
+def _parse_certifications(text: str) -> list[dict]:
+    if not text:
+        return []
+    certs = []
+    for line in text.splitlines():
+        line = line.strip(" •-–*·").strip()
+        if not line:
+            continue
+        dates = _DATE_RE.findall(line)
+        date = dates[-1] if dates else ""
+        name = _DATE_RE.sub("", line).strip(" –-|·,")
+        parts = re.split(r"[|,·]", name)
+        certs.append({
+            "name": parts[0].strip(),
+            "issuer": parts[1].strip() if len(parts) > 1 else "",
+            "date": date,
+        })
+    return certs
+
+
+# ── Languages parser ──────────────────────────────────────────────────────────
+
+def _parse_languages(text: str) -> list[str]:
+    if not text:
+        return []
+    langs = []
+    for item in re.split(r"[,|;\n•]", text):
+        item = item.strip(" •-–*·").strip()
+        if item:
+            langs.append(item)
+    return langs
+
+
+# ── Projects parser ───────────────────────────────────────────────────────────
+
+def _parse_projects(text: str) -> list[dict]:
+    if not text:
+        return []
+    projects = []
+    blocks = re.split(r"\n{2,}", text)
+    for block in blocks:
+        lines = [l.strip() for l in block.splitlines() if l.strip()]
+        if not lines:
+            continue
+        name = lines[0]
+        description = " ".join(lines[1:]) if len(lines) > 1 else ""
+        # Extract technologies from parentheses or tech keywords
+        tech_match = re.findall(r"\(([^)]+)\)", description)
+        technologies = []
+        for t in tech_match:
+            technologies.extend([x.strip() for x in t.split(",")])
+        projects.append({"name": name, "description": description, "technologies": technologies})
+    return projects
+
+
+# ── Main parse function ───────────────────────────────────────────────────────
+
+def parse_cv(file: BinaryIO, filename: str) -> dict:
+    """Parse an uploaded CV file and return a CVData dict."""
+    raw_text = extract_text(file, filename)
+    sections = _split_into_sections(raw_text)
+
+    contact = _extract_contact(sections.get("header", ""))
+
+    cv_data: dict = {
+        **contact,
+        "summary":        sections.get("summary", "").strip(),
+        "experience":     _parse_experience(sections.get("experience", "")),
+        "education":      _parse_education(sections.get("education", "")),
+        "skills":         _parse_skills(sections.get("skills", "")),
+        "certifications": _parse_certifications(sections.get("certifications", "")),
+        "languages":      _parse_languages(sections.get("languages", "")),
+        "projects":       _parse_projects(sections.get("projects", "")),
+        "raw_text":       raw_text,
+    }
+    return cv_data
