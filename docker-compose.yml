@@ -1,0 +1,94 @@
+version: "3.9"
+
+# ── ReviZoR FranK — Full deployment stack ─────────────────────────────────────
+#
+# Services:
+#   api      — FastAPI auth + admin server (port 8000, internal)
+#   app      — Streamlit CV tool (port 8501, internal)
+#   nginx    — Reverse proxy + HTTPS termination (ports 80/443, public)
+#
+# All user traffic goes through nginx only.
+# Internal services (api, app) are not exposed to the host.
+#
+# Setup:
+#   1. Copy .env.example to .env and fill in all values
+#   2. Place your SSL certs in ./nginx/certs/ (or use the self-signed generator below)
+#   3. docker compose up -d
+
+services:
+
+  # ── Auth API ────────────────────────────────────────────────────────────────
+  api:
+    build: .
+    command: uvicorn server.main:app --host 0.0.0.0 --port 8000 --workers 2
+    restart: unless-stopped
+    environment:
+      SECRET_KEY:                   ${SECRET_KEY}
+      ANTHROPIC_API_KEY:            ${ANTHROPIC_API_KEY}
+      ADMIN_USERNAME:               ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD:               ${ADMIN_PASSWORD:-}
+      ADMIN_EMAIL:                  ${ADMIN_EMAIL:-admin@revizor.local}
+      ACCESS_TOKEN_EXPIRE_MINUTES:  ${ACCESS_TOKEN_EXPIRE_MINUTES:-480}
+      REFRESH_TOKEN_EXPIRE_DAYS:    ${REFRESH_TOKEN_EXPIRE_DAYS:-7}
+      MAX_FAILED_ATTEMPTS:          ${MAX_FAILED_ATTEMPTS:-5}
+      LOCKOUT_MINUTES:              ${LOCKOUT_MINUTES:-30}
+      ALLOWED_ORIGINS:              ${ALLOWED_ORIGINS:-https://yourdomain.com}
+    volumes:
+      - revizor_data:/app/revizor_frank/storage/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ── Streamlit App ────────────────────────────────────────────────────────────
+  app:
+    build: .
+    command: >
+      streamlit run revizor_frank/app.py
+      --server.port=8501
+      --server.headless=true
+      --server.address=0.0.0.0
+      --browser.gatherUsageStats=false
+      --server.enableCORS=false
+      --server.enableXsrfProtection=true
+    restart: unless-stopped
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      API_BASE_URL:      http://api:8000
+    volumes:
+      - revizor_data:/app/revizor_frank/storage/data
+      - revizor_exports:/app/revizor_frank/exports
+    networks:
+      - internal
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # ── Nginx reverse proxy ───────────────────────────────────────────────────────
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    networks:
+      - internal
+    depends_on:
+      - app
+      - api
+
+# ── Volumes ────────────────────────────────────────────────────────────────────
+volumes:
+  revizor_data:
+  revizor_exports:
+
+# ── Networks ──────────────────────────────────────────────────────────────────
+networks:
+  internal:
+    driver: bridge

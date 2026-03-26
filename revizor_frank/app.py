@@ -1,6 +1,10 @@
 """ReviZoR FranK — Main Streamlit Application.
 
 Run with:  streamlit run revizor_frank/app.py
+
+Auth modes:
+- Local (no API_BASE_URL env var): no login gate, single-user desktop use
+- Deployed (API_BASE_URL set): full JWT login gate against the FastAPI server
 """
 
 from __future__ import annotations
@@ -10,8 +14,10 @@ import os
 import tempfile
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
+import httpx
 import streamlit as st
 
 from revizor_frank.config import (
@@ -23,6 +29,11 @@ from revizor_frank.config import (
     ANTHROPIC_API_KEY,
 )
 from revizor_frank.i18n import STRINGS as S
+
+# ── Auth config ───────────────────────────────────────────────────────────────
+# Set API_BASE_URL to enable the login gate (e.g. http://localhost:8000)
+API_BASE_URL: str = os.getenv("API_BASE_URL", "").rstrip("/")
+AUTH_ENABLED: bool = bool(API_BASE_URL)
 
 # ── Page config (must be first Streamlit call) ────────────────────────────────
 st.set_page_config(
@@ -77,6 +88,7 @@ st.markdown("""
 
 def _init_state():
     defaults = {
+        # CV pipeline
         "stage":            "upload",      # upload | processing | results
         "session_id":       None,
         "parsed_cv":        None,
@@ -90,6 +102,12 @@ def _init_state():
         "filename":         "",
         "online":           False,
         "error":            None,
+        # Auth (used only when AUTH_ENABLED)
+        "auth_token":       None,
+        "refresh_token":    None,
+        "auth_user":        None,         # {username, role, email}
+        "auth_expires_at":  None,         # ISO string
+        "auth_error":       None,
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -97,6 +115,139 @@ def _init_state():
 
 
 _init_state()
+
+
+# ── Auth helpers ──────────────────────────────────────────────────────────────
+
+def _api_login(username: str, password: str) -> dict | None:
+    """POST to FastAPI /api/auth/login. Returns token dict or None on failure."""
+    try:
+        r = httpx.post(
+            f"{API_BASE_URL}/api/auth/login",
+            json={"username": username, "password": password},
+            timeout=10,
+        )
+        if r.status_code == 200:
+            return r.json()
+        st.session_state.auth_error = r.json().get("detail", "Login failed")
+        return None
+    except Exception as e:
+        st.session_state.auth_error = f"Cannot reach auth server: {e}"
+        return None
+
+
+def _api_logout():
+    """POST to FastAPI /api/auth/logout with the current token."""
+    token = st.session_state.auth_token
+    if not token:
+        return
+    try:
+        httpx.post(
+            f"{API_BASE_URL}/api/auth/logout",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=5,
+        )
+    except Exception:
+        pass  # Best-effort logout
+
+
+def _api_refresh() -> bool:
+    """Try to refresh the access token. Returns True on success."""
+    refresh = st.session_state.refresh_token
+    if not refresh:
+        return False
+    try:
+        r = httpx.post(
+            f"{API_BASE_URL}/api/auth/refresh",
+            json={"refresh_token": refresh},
+            timeout=10,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            st.session_state.auth_token = data["access_token"]
+            st.session_state.refresh_token = data["refresh_token"]
+            st.session_state.auth_expires_at = data["expires_at"]
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _session_is_valid() -> bool:
+    """Return True if the current session token is still valid."""
+    expires_at = st.session_state.auth_expires_at
+    if not expires_at or not st.session_state.auth_token:
+        return False
+    try:
+        exp = datetime.fromisoformat(expires_at).replace(tzinfo=timezone.utc)
+        remaining = (exp - datetime.now(timezone.utc)).total_seconds()
+        # Auto-refresh when < 15 minutes remain
+        if 0 < remaining < 900:
+            _api_refresh()
+        return remaining > 0
+    except Exception:
+        return False
+
+
+def _session_remaining_str() -> str:
+    expires_at = st.session_state.auth_expires_at
+    if not expires_at:
+        return ""
+    try:
+        exp = datetime.fromisoformat(expires_at).replace(tzinfo=timezone.utc)
+        secs = int((exp - datetime.now(timezone.utc)).total_seconds())
+        if secs <= 0:
+            return "Expired"
+        h, m = divmod(secs // 60, 60)
+        if h:
+            return f"{h}h {m}m"
+        return f"{m}m"
+    except Exception:
+        return ""
+
+
+def render_login():
+    """Full-page login form. Only shown in AUTH_ENABLED mode."""
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.markdown(f"<h1 style='text-align:center'>📄 {APP_NAME}</h1>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align:center;color:#666'>Sign in to continue</p>",
+                    unsafe_allow_html=True)
+        st.divider()
+
+        with st.form("login_form", clear_on_submit=False):
+            username = st.text_input("Username", placeholder="your.username")
+            password = st.text_input("Password", type="password", placeholder="••••••••••")
+            submitted = st.form_submit_button("Sign In", use_container_width=True, type="primary")
+
+        if submitted:
+            if not username or not password:
+                st.error("Please enter your username and password.")
+            else:
+                with st.spinner("Signing in..."):
+                    result = _api_login(username, password)
+                if result:
+                    st.session_state.auth_token = result["access_token"]
+                    st.session_state.refresh_token = result["refresh_token"]
+                    st.session_state.auth_expires_at = result["expires_at"]
+                    # Fetch user info
+                    try:
+                        me = httpx.get(
+                            f"{API_BASE_URL}/api/auth/me",
+                            headers={"Authorization": f"Bearer {result['access_token']}"},
+                            timeout=5,
+                        ).json()
+                        st.session_state.auth_user = me.get("user", {})
+                    except Exception:
+                        st.session_state.auth_user = {"username": username}
+                    st.session_state.auth_error = None
+                    st.rerun()
+
+        if st.session_state.auth_error:
+            st.error(st.session_state.auth_error)
+
+        st.divider()
+        st.caption("Protected by ReviZoR FranK — Unauthorized access is prohibited.")
 
 
 # ── Online check ──────────────────────────────────────────────────────────────
@@ -114,6 +265,24 @@ def render_sidebar():
         st.markdown(f"## 📄 {APP_NAME}")
         st.caption(f"v{APP_VERSION}")
         st.divider()
+
+        # ── Auth info (deployed mode) ─────────────────────────────────────────
+        if AUTH_ENABLED and st.session_state.auth_user:
+            user = st.session_state.auth_user
+            remaining = _session_remaining_str()
+            st.markdown(
+                f"**{user.get('username', '')}**  "
+                f"`{user.get('role', 'user').upper()}`"
+            )
+            if remaining:
+                color = "red" if remaining in ("Expired",) else "orange" if "m" in remaining and "h" not in remaining else "green"
+                st.caption(f"Session expires in: :{color}[{remaining}]")
+            if st.button("Sign Out", use_container_width=True):
+                _api_logout()
+                for key in list(st.session_state.keys()):
+                    del st.session_state[key]
+                st.rerun()
+            st.divider()
 
         # Connection status
         online = _check_online()
@@ -138,8 +307,13 @@ def render_sidebar():
         st.divider()
         if st.session_state.stage == "results":
             if st.button("🔄 Start Over", use_container_width=True):
+                # Preserve auth state
+                auth_keys = {k: st.session_state[k] for k in
+                             ("auth_token", "refresh_token", "auth_user", "auth_expires_at", "auth_error")
+                             if k in st.session_state}
                 for key in list(st.session_state.keys()):
                     del st.session_state[key]
+                st.session_state.update(auth_keys)
                 st.rerun()
 
         st.divider()
@@ -682,6 +856,14 @@ def _build_linkedin_bytes(linkedin_data: dict) -> bytes:
 # ── Main router ───────────────────────────────────────────────────────────────
 
 def main():
+    # ── Auth gate ─────────────────────────────────────────────────────────────
+    if AUTH_ENABLED:
+        if not _session_is_valid():
+            # Clear expired token
+            st.session_state.auth_token = None
+            render_login()
+            return
+
     render_sidebar()
     stage = st.session_state.stage
     if stage == "upload":
