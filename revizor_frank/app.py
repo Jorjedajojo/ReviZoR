@@ -5,6 +5,7 @@ Run with:  streamlit run revizor_frank/app.py
 Auth modes:
 - Local (no API_BASE_URL env var): no login gate, single-user desktop use
 - Deployed (API_BASE_URL set): full JWT login gate against the FastAPI server
+- Streamlit Cloud: secrets injected via st.secrets, viewer auth managed in dashboard
 """
 
 from __future__ import annotations
@@ -17,8 +18,20 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-import httpx
 import streamlit as st
+
+# ── Streamlit Cloud secrets bridge ────────────────────────────────────────────
+# On Streamlit Cloud, secrets live in st.secrets rather than .env.
+# We push them into os.environ early so the rest of the app is unaware of
+# where secrets came from (works identically in both environments).
+try:
+    for _secret_key in ("ANTHROPIC_API_KEY", "SECRET_KEY", "API_BASE_URL"):
+        if _secret_key in st.secrets and not os.environ.get(_secret_key):
+            os.environ[_secret_key] = st.secrets[_secret_key]
+except Exception:
+    pass  # Not on Streamlit Cloud — .env is used instead
+
+import httpx
 
 from revizor_frank.config import (
     APP_NAME,
@@ -31,7 +44,6 @@ from revizor_frank.config import (
 from revizor_frank.i18n import STRINGS as S
 
 # ── Auth config ───────────────────────────────────────────────────────────────
-# Set API_BASE_URL to enable the login gate (e.g. http://localhost:8000)
 API_BASE_URL: str = os.getenv("API_BASE_URL", "").rstrip("/")
 AUTH_ENABLED: bool = bool(API_BASE_URL)
 
