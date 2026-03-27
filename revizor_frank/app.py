@@ -3,33 +3,34 @@
 Run with:  streamlit run revizor_frank/app.py
 
 Auth modes:
-- Local (no API_BASE_URL env var): no login gate, single-user desktop use
-- Deployed (API_BASE_URL set): full JWT login gate against the FastAPI server
-- Streamlit Cloud: secrets injected via st.secrets, viewer auth managed in dashboard
+- Local (no APP_USERNAME secret/env):  no login gate, single-user desktop use
+- Deployed (APP_USERNAME + APP_PASSWORD set in secrets): standalone login gate
+- Deployed (API_BASE_URL set in secrets): full JWT login against FastAPI server
 """
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import io
 import os
 import tempfile
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import streamlit as st
 
 # ── Streamlit Cloud secrets bridge ────────────────────────────────────────────
-# On Streamlit Cloud, secrets live in st.secrets rather than .env.
-# We push them into os.environ early so the rest of the app is unaware of
-# where secrets came from (works identically in both environments).
+# Pushes st.secrets into os.environ so the rest of the app is environment-agnostic.
 try:
-    for _secret_key in ("ANTHROPIC_API_KEY", "SECRET_KEY", "API_BASE_URL"):
-        if _secret_key in st.secrets and not os.environ.get(_secret_key):
-            os.environ[_secret_key] = st.secrets[_secret_key]
+    for _k in ("ANTHROPIC_API_KEY", "SECRET_KEY", "API_BASE_URL",
+               "APP_USERNAME", "APP_PASSWORD", "SESSION_TIMEOUT_HOURS"):
+        if _k in st.secrets and not os.environ.get(_k):
+            os.environ[_k] = str(st.secrets[_k])
 except Exception:
-    pass  # Not on Streamlit Cloud — .env is used instead
+    pass
 
 import httpx
 
@@ -44,8 +45,79 @@ from revizor_frank.config import (
 from revizor_frank.i18n import STRINGS as S
 
 # ── Auth config ───────────────────────────────────────────────────────────────
-API_BASE_URL: str = os.getenv("API_BASE_URL", "").rstrip("/")
-AUTH_ENABLED: bool = bool(API_BASE_URL)
+API_BASE_URL: str        = os.getenv("API_BASE_URL", "").rstrip("/")
+_APP_USERNAME: str       = os.getenv("APP_USERNAME", "")
+_APP_PASSWORD: str       = os.getenv("APP_PASSWORD", "")
+SESSION_TIMEOUT_HOURS: int = int(os.getenv("SESSION_TIMEOUT_HOURS", "8"))
+
+# Auth mode resolution (priority order)
+SIMPLE_AUTH: bool = bool(_APP_USERNAME and _APP_PASSWORD) and not API_BASE_URL
+JWT_AUTH: bool    = bool(API_BASE_URL)
+AUTH_ENABLED: bool = JWT_AUTH  # kept for JWT path compatibility
+
+
+def _check_credentials(username: str, password: str) -> bool:
+    """Constant-time credential check to prevent timing attacks."""
+    u_ok = hmac.compare_digest(username.strip().lower(), _APP_USERNAME.strip().lower())
+    p_ok = hmac.compare_digest(
+        hashlib.sha256(password.encode()).hexdigest(),
+        hashlib.sha256(_APP_PASSWORD.encode()).hexdigest(),
+    )
+    return u_ok and p_ok
+
+
+def _simple_auth_valid() -> bool:
+    if not st.session_state.get("simple_auth_ok"):
+        return False
+    login_time = st.session_state.get("simple_auth_time")
+    if not login_time:
+        return False
+    elapsed = datetime.now(timezone.utc) - login_time
+    return elapsed < timedelta(hours=SESSION_TIMEOUT_HOURS)
+
+
+def render_simple_login():
+    """Standalone username/password login page — no external service required."""
+    # Hide sidebar on login page
+    st.markdown("<style>[data-testid='stSidebar']{display:none}</style>",
+                unsafe_allow_html=True)
+
+    col1, col2, col3 = st.columns([1, 1.4, 1])
+    with col2:
+        st.markdown("<br><br>", unsafe_allow_html=True)
+        st.markdown(
+            f"<h1 style='text-align:center;margin-bottom:0'>📄 {APP_NAME}</h1>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            "<p style='text-align:center;color:#888;margin-top:4px'>"
+            "AI-Powered CV Optimization Engine</p>",
+            unsafe_allow_html=True,
+        )
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        with st.form("simple_login", clear_on_submit=False):
+            username = st.text_input("Username", placeholder="Enter your username")
+            password = st.text_input("Password", type="password", placeholder="Enter your password")
+            submitted = st.form_submit_button("Sign In", use_container_width=True, type="primary")
+
+        if submitted:
+            if _check_credentials(username, password):
+                st.session_state.simple_auth_ok   = True
+                st.session_state.simple_auth_time = datetime.now(timezone.utc)
+                st.session_state.simple_auth_user = username.strip().lower()
+                st.rerun()
+            else:
+                # Small delay to further slow brute-force attempts
+                time.sleep(1.5)
+                st.error("Invalid username or password.")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown(
+            "<p style='text-align:center;font-size:0.75rem;color:#bbb'>"
+            "This tool is for authorized use only.</p>",
+            unsafe_allow_html=True,
+        )
 
 # ── Page config (must be first Streamlit call) ────────────────────────────────
 st.set_page_config(
@@ -114,12 +186,16 @@ def _init_state():
         "filename":         "",
         "online":           False,
         "error":            None,
-        # Auth (used only when AUTH_ENABLED)
+        # Auth — JWT mode
         "auth_token":       None,
         "refresh_token":    None,
-        "auth_user":        None,         # {username, role, email}
-        "auth_expires_at":  None,         # ISO string
+        "auth_user":        None,
+        "auth_expires_at":  None,
         "auth_error":       None,
+        # Auth — simple mode
+        "simple_auth_ok":   False,
+        "simple_auth_time": None,
+        "simple_auth_user": None,
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -278,8 +354,28 @@ def render_sidebar():
         st.caption(f"v{APP_VERSION}")
         st.divider()
 
-        # ── Auth info (deployed mode) ─────────────────────────────────────────
-        if AUTH_ENABLED and st.session_state.auth_user:
+        # ── Auth info — simple mode ───────────────────────────────────────────
+        if SIMPLE_AUTH and st.session_state.get("simple_auth_ok"):
+            login_time = st.session_state.get("simple_auth_time")
+            if login_time:
+                elapsed   = datetime.now(timezone.utc) - login_time
+                remaining = timedelta(hours=SESSION_TIMEOUT_HOURS) - elapsed
+                rem_h, rem_m = divmod(int(remaining.total_seconds()) // 60, 60)
+                rem_str = f"{rem_h}h {rem_m}m" if rem_h else f"{rem_m}m"
+                color   = "green" if rem_h >= 1 else "orange"
+            else:
+                rem_str, color = "—", "grey"
+
+            st.markdown(f"**{st.session_state.get('simple_auth_user', 'user')}**")
+            st.caption(f"Session expires in: :{color}[{rem_str}]")
+            if st.button("Sign Out", use_container_width=True):
+                st.session_state.simple_auth_ok   = False
+                st.session_state.simple_auth_time = None
+                st.rerun()
+            st.divider()
+
+        # ── Auth info — JWT mode ──────────────────────────────────────────────
+        elif AUTH_ENABLED and st.session_state.auth_user:
             user = st.session_state.auth_user
             remaining = _session_remaining_str()
             st.markdown(
@@ -868,10 +964,15 @@ def _build_linkedin_bytes(linkedin_data: dict) -> bytes:
 # ── Main router ───────────────────────────────────────────────────────────────
 
 def main():
-    # ── Auth gate ─────────────────────────────────────────────────────────────
-    if AUTH_ENABLED:
+    # ── Auth gate: simple username/password mode ──────────────────────────────
+    if SIMPLE_AUTH:
+        if not _simple_auth_valid():
+            render_simple_login()
+            return
+
+    # ── Auth gate: JWT / FastAPI mode ─────────────────────────────────────────
+    elif AUTH_ENABLED:
         if not _session_is_valid():
-            # Clear expired token
             st.session_state.auth_token = None
             render_login()
             return
