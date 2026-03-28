@@ -21,6 +21,19 @@ REGISTRY: dict = {
 }
 
 
-def get_template(name: str):
+def get_template(name: str, primary_color: str = ""):
+    """Instantiate a template by name, optionally overriding the primary colour.
+
+    primary_color: hex string with or without leading '#', e.g. '#1a3a5c' or '1a3a5c'.
+    """
     cls = REGISTRY.get(name, ModernTemplate)
-    return cls()
+    tmpl = cls()
+    if primary_color:
+        from reportlab.lib.colors import HexColor
+        hex_clean = primary_color.lstrip("#")
+        if len(hex_clean) == 6:
+            tmpl.style.primary_color = HexColor(f"#{hex_clean}")
+            tmpl.style.accent_color = HexColor(f"#{hex_clean}")
+            tmpl.style.docx_primary_hex = hex_clean
+            tmpl.style.docx_accent_hex = hex_clean
+    return tmpl

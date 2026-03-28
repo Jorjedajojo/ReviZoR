@@ -16,6 +16,7 @@ CVData schema (TypedDict-style for reference):
     "location": str,
     "linkedin": str,
     "website": str,
+    "dob": str,      # date of birth (optional)
     "summary": str,
     "experience": [{"title", "company", "location", "start_date", "end_date", "bullets": [str]}],
     "education":  [{"degree", "institution", "location", "year", "gpa", "honors"}],
@@ -114,10 +115,15 @@ def extract_text_from_pdf(file: BinaryIO, api_key: str = "") -> tuple[str, int, 
                         "type": "text",
                         "text": (
                             "Extract all text content from this CV/resume exactly as it appears. "
+                            "This CV may be in Arabic or another non-Latin script — preserve all "
+                            "characters and Arabic text exactly as written. "
+                            "If the CV is in Arabic, extract Arabic section headings verbatim "
+                            "(e.g. الخبرة، التعليم، المهارات، اللغات، الشهادات، خلاصة). "
                             "Include every section, every line, every detail — contact information, "
                             "summary, work experience, education, skills, certifications, and especially "
                             "the Languages section: list every language with its proficiency level exactly "
-                            "as written (e.g. Arabic – Native, English – Fluent, German – Intermediate). "
+                            "as written (e.g. Arabic – Native, English – Fluent, German – Intermediate, "
+                            "or العربية – اللغة الأم، الإنجليزية – طلاقة). "
                             "Include any other sections present. Output plain text only, no markdown."
                         ),
                     },
@@ -190,6 +196,28 @@ _DATE_RE = re.compile(
     r"\d{4}",
     re.I,
 )
+_DOB_RE = re.compile(
+    r"(?:date\s+of\s+birth|dob|born|birth\s+date|تاريخ[\s\u200c]*الميلاد|تاريخ[\s\u200c]*الولادة)"
+    r"[\s:]*"
+    r"(\d{1,2}[\s\/\-\.]+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
+    r"[\s,]+\d{4}"
+    r"|\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}"
+    r"|\d{4}[\/\-\.]\d{1,2}[\/\-\.]\d{1,2})",
+    re.I,
+)
+_ARABIC_RE = re.compile(r"[\u0600-\u06FF\u0750-\u077F]")
+
+
+def _is_arabic(text: str) -> bool:
+    """Return True if the text contains significant Arabic script."""
+    arabic_chars = sum(1 for c in text if _ARABIC_RE.match(c))
+    return arabic_chars > 10
+
+
+class NonCVDocumentError(ValueError):
+    """Raised when the uploaded document is detected to be a non-CV (e.g. job offer)."""
+    pass
 
 # Section heading detection — covers common CV heading variations.
 # Trailing :, -, _, – and decorative fill characters are stripped.
@@ -197,41 +225,53 @@ _DATE_RE = re.compile(
 _SECTION_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("summary", re.compile(
         r"^\s*(summary|profile|objective|about\s+me|professional\s+summary|"
-        r"career\s+objective|career\s+summary|personal\s+statement|"
-        r"executive\s+summary)\s*[:\-–_─]*\s*$", re.I | re.M)),
+        r"career\s+objective|career\s+summary|personal\s+statement|executive\s+summary|"
+        r"خلاصة|ملخص|الهدف|نبذة\s*شخصية|ملخص\s*مهني|الغرض)\s*[:\-–_─]*\s*$",
+        re.M)),
     ("experience", re.compile(
         r"^\s*(experience|work\s+experience|employment|work\s+history|"
         r"career\s+history|professional\s+experience|employment\s+history|"
-        r"career\s+experience|relevant\s+experience)\s*[:\-–_─]*\s*$", re.I | re.M)),
+        r"career\s+experience|relevant\s+experience|"
+        r"الخبرة|الخبرات|الخبرة\s*المهنية|الخبرات\s*المهنية|تاريخ\s*العمل|المسيرة\s*المهنية)\s*[:\-–_─]*\s*$",
+        re.M)),
     ("education", re.compile(
         r"^\s*(education|academic|qualifications|academic\s+background|"
-        r"education\s+[&and]+\s+training|educational\s+background|"
-        r"academic\s+qualifications)\s*[:\-–_─]*\s*$", re.I | re.M)),
+        r"education\s+[&and]+\s+training|educational\s+background|academic\s+qualifications|"
+        r"التعليم|المؤهلات|المؤهلات\s*الدراسية|الخلفية\s*الأكاديمية|التعليم\s*والتدريب)\s*[:\-–_─]*\s*$",
+        re.M)),
     ("skills", re.compile(
         r"^\s*(skills|technical\s+skills|core\s+competencies|competencies|"
-        r"expertise|key\s+skills|skills\s+[&and]+\s+competencies|"
-        r"skill\s+set|areas\s+of\s+expertise)\s*[:\-–_─]*\s*$", re.I | re.M)),
+        r"expertise|key\s+skills|skills\s+[&and]+\s+competencies|skill\s+set|areas\s+of\s+expertise|"
+        r"المهارات|المهارات\s*الأساسية|المهارات\s*التقنية|الكفاءات|الكفاءات\s*الجوهرية)\s*[:\-–_─]*\s*$",
+        re.M)),
     ("certifications", re.compile(
         r"^\s*(certifications?|licenses?|credentials|accreditations?|"
-        r"courses?|training|professional\s+development|"
-        r"certificates?\s+[&and]+\s+licenses?)\s*[:\-–_─]*\s*$", re.I | re.M)),
+        r"courses?|training|professional\s+development|certificates?\s+[&and]+\s+licenses?|"
+        r"الشهادات|الدورات|التدريب|الشهادات\s*المهنية|الاعتمادات)\s*[:\-–_─]*\s*$",
+        re.M)),
     ("languages", re.compile(
         r"^\s*(languages?|language\s+skills|linguistic\s+skills|"
         r"languages?\s+[&and]+\s+communication|spoken\s+languages?|"
-        r"language\s+proficiencies|language\s+abilities|لغات)\s*[:\-–_─]*\s*$",
-        re.I | re.M)),
+        r"language\s+proficiencies|language\s+abilities|"
+        r"لغات|اللغات|المهارات\s*اللغوية)\s*[:\-–_─]*\s*$",
+        re.M)),
     ("projects", re.compile(
         r"^\s*(projects?|personal\s+projects?|key\s+projects?|"
-        r"selected\s+projects?|notable\s+projects?)\s*[:\-–_─]*\s*$", re.I | re.M)),
+        r"selected\s+projects?|notable\s+projects?|"
+        r"المشاريع|المشاريع\s*الرئيسية)\s*[:\-–_─]*\s*$",
+        re.M)),
     ("publications", re.compile(
-        r"^\s*(publications?|papers?|research|research\s+[&and]+\s+publications?)\s*[:\-–_─]*\s*$",
-        re.I | re.M)),
+        r"^\s*(publications?|papers?|research|research\s+[&and]+\s+publications?|"
+        r"الأبحاث|المنشورات)\s*[:\-–_─]*\s*$",
+        re.M)),
     ("awards", re.compile(
-        r"^\s*(awards?|honors?|achievements?|recognitions?|"
-        r"awards?\s+[&and]+\s+honors?)\s*[:\-–_─]*\s*$", re.I | re.M)),
+        r"^\s*(awards?|honors?|achievements?|recognitions?|awards?\s+[&and]+\s+honors?|"
+        r"الجوائز|التكريمات|الإنجازات)\s*[:\-–_─]*\s*$",
+        re.M)),
     ("volunteer", re.compile(
-        r"^\s*(volunteer|volunteering|community|civic|"
-        r"volunteer\s+experience)\s*[:\-–_─]*\s*$", re.I | re.M)),
+        r"^\s*(volunteer|volunteering|community|civic|volunteer\s+experience|"
+        r"التطوع|العمل\s*التطوعي)\s*[:\-–_─]*\s*$",
+        re.M)),
 ]
 
 
@@ -284,21 +324,36 @@ def _extract_contact(header_text: str) -> dict:
             website = u
             break
 
-    # Name heuristic: longest line in first 5 lines that isn't contact info
+    # Name heuristic: longest suitable line in first 5 lines
+    # Works for both Latin and Arabic names
     name = ""
     contact_tokens = {email, phone, linkedin, website}
     for line in lines[:5]:
-        if line and not any(tok in line for tok in contact_tokens if tok):
-            if not _EMAIL_RE.search(line) and not _PHONE_RE.search(line):
-                if len(line) > len(name):
-                    name = line
+        if not line:
+            continue
+        if any(tok in line for tok in contact_tokens if tok):
+            continue
+        if _EMAIL_RE.search(line) or _PHONE_RE.search(line):
+            continue
+        # Skip DOB lines
+        if _DOB_RE.search(line):
+            continue
+        if len(line) > len(name):
+            name = line
 
-    # Location: look for "City, State/Country" pattern
+    # Location: "City, State/Country" for Latin; skip for Arabic (too complex)
     location = ""
-    loc_re = re.compile(r"[A-Z][a-z]+(?:,\s*[A-Z][a-z]+)+")
-    loc_m = loc_re.search(header_text)
-    if loc_m:
-        location = loc_m.group(0)
+    if not _is_arabic(header_text):
+        loc_re = re.compile(r"[A-Z][a-z]+(?:,\s*[A-Z][a-z]+)+")
+        loc_m = loc_re.search(header_text)
+        if loc_m:
+            location = loc_m.group(0)
+
+    # DOB extraction
+    dob = ""
+    dob_m = _DOB_RE.search(header_text)
+    if dob_m:
+        dob = dob_m.group(1).strip()
 
     return {
         "name": name,
@@ -307,6 +362,7 @@ def _extract_contact(header_text: str) -> dict:
         "location": location,
         "linkedin": linkedin,
         "website": website,
+        "dob": dob,
     }
 
 
@@ -399,11 +455,79 @@ def _parse_education(text: str) -> list[dict]:
     return entries
 
 
+# ── Skills classifier ─────────────────────────────────────────────────────────
+
+_CORE_SKILL_TOKENS: frozenset[str] = frozenset([
+    "leadership", "management", "communication", "teamwork", "collaboration",
+    "analytical", "analysis", "strategic", "planning", "problem solving",
+    "problem-solving", "critical thinking", "presentation", "negotiation",
+    "interpersonal", "time management", "organizational", "multitasking",
+    "adaptability", "flexibility", "creativity", "innovation", "decision making",
+    "customer service", "stakeholder", "training", "coaching", "mentoring",
+    "report writing", "writing", "budgeting", "coordination", "facilitation",
+    "conflict resolution", "emotional intelligence", "networking", "change management",
+    "people management", "verbal", "written", "documentation", "relationship",
+    "team building", "motivation", "empathy", "diplomacy", "cultural",
+])
+_TECHNICAL_SKILL_TOKENS: frozenset[str] = frozenset([
+    "python", "java", "javascript", "typescript", "c++", "c#", "ruby", "php",
+    "swift", "kotlin", "go", "rust", "scala", "r", "matlab", "perl", "bash", "shell",
+    "sql", "html", "css", "xml", "json", "yaml", "react", "angular", "vue",
+    "node.js", "nodejs", "django", "flask", "fastapi", "spring", "laravel",
+    "aws", "azure", "gcp", "google cloud", "cloud", "docker", "kubernetes",
+    "terraform", "ansible", "jenkins", "ci/cd", "devops", "linux", "unix",
+    "git", "github", "gitlab", "excel", "powerpoint", "vba",
+    "tableau", "power bi", "looker", "salesforce", "sap", "oracle", "dynamics",
+    "jira", "confluence", "tensorflow", "pytorch", "scikit-learn", "keras",
+    "pandas", "numpy", "machine learning", "deep learning", "nlp", "computer vision",
+    "hadoop", "spark", "kafka", "databricks", "snowflake", "mongodb", "postgresql",
+    "mysql", "redis", "elasticsearch", "photoshop", "illustrator", "figma",
+    "autocad", "solidworks", "unity", "api", "microservices", "android", "ios",
+    "flutter", "react native", "network", "cisco", "firewall", "vpn",
+    "programming", "software", "database", "server", "backend", "frontend",
+    "full stack", "fullstack", "infrastructure", "security", "testing", "qa",
+    "automation", "data", "analytics", "bi", "erp", "crm",
+])
+
+
+def _classify_skill_item(item: str) -> str:
+    """Return 'core' or 'technical' for a single skill string."""
+    lower = item.lower()
+    if any(kw in lower for kw in _TECHNICAL_SKILL_TOKENS):
+        return "technical"
+    if any(kw in lower for kw in _CORE_SKILL_TOKENS):
+        return "core"
+    # Heuristic: all-caps abbreviations or items with symbols look technical
+    if re.search(r"\b[A-Z]{2,}\b", item) or re.search(r"[./+#\d]", item):
+        return "technical"
+    return "core"
+
+
+def _split_into_core_technical(items: list[str]) -> dict:
+    """Classify a flat skill list into Core and Technical Competencies."""
+    core, technical = [], []
+    for item in items:
+        if _classify_skill_item(item) == "technical":
+            technical.append(item)
+        else:
+            core.append(item)
+    categories = []
+    if technical:
+        categories.append({"name": "Technical Competencies", "items": technical})
+    if core:
+        categories.append({"name": "Core Competencies", "items": core})
+    return {"categories": categories or [{"name": "Skills", "items": items}]}
+
+
 # ── Skills parser ─────────────────────────────────────────────────────────────
+
+_GENERIC_SKILL_CAT = re.compile(r"^(skills?|competencies|expertise)$", re.I)
+
 
 def _parse_skills(text: str) -> dict:
     if not text:
-        return {"categories": [{"name": "Skills", "items": []}]}
+        return {"categories": [{"name": "Technical Competencies", "items": []},
+                                {"name": "Core Competencies", "items": []}]}
     categories = []
     blocks = re.split(r"\n{2,}", text)
     for block in blocks:
@@ -411,11 +535,11 @@ def _parse_skills(text: str) -> dict:
         if not lines:
             continue
         # If first line looks like a category label (short, no punctuation at end)
-        if len(lines[0]) < 40 and not lines[0].endswith((".", ",", ";")):
-            cat_name = lines[0].rstrip(":")
+        if len(lines[0]) < 50 and not lines[0].endswith((".", ",")):
+            cat_name = lines[0].rstrip(":").strip()
             items_text = " ".join(lines[1:])
         else:
-            cat_name = "Skills"
+            cat_name = ""
             items_text = " ".join(lines)
         # Split items by comma, pipe, semicolon, or bullet
         items = [
@@ -424,8 +548,25 @@ def _parse_skills(text: str) -> dict:
             if i.strip(" •-–*·")
         ]
         if items:
-            categories.append({"name": cat_name, "items": items})
-    return {"categories": categories if categories else [{"name": "Skills", "items": []}]}
+            categories.append({"name": cat_name or "Skills", "items": items})
+
+    if not categories:
+        return {"categories": [{"name": "Technical Competencies", "items": []},
+                                {"name": "Core Competencies", "items": []}]}
+
+    # If there's a single generic "Skills" category, auto-classify into Core / Technical
+    if len(categories) == 1 and _GENERIC_SKILL_CAT.match(categories[0]["name"]):
+        return _split_into_core_technical(categories[0]["items"])
+
+    # Also reclassify if category names match generic variations
+    all_items = []
+    all_generic = all(_GENERIC_SKILL_CAT.match(c["name"]) for c in categories)
+    if all_generic:
+        for cat in categories:
+            all_items.extend(cat["items"])
+        return _split_into_core_technical(all_items)
+
+    return {"categories": categories}
 
 
 # ── Certifications parser ─────────────────────────────────────────────────────
@@ -512,6 +653,62 @@ def _fallback_language_scan(raw_text: str) -> list[str]:
     return found
 
 
+# ── Document type classifier (job offer vs CV) ────────────────────────────────
+
+def _classify_document(text: str, api_key: str) -> tuple[str, int, int]:
+    """Return ('CV'|'OTHER', in_tok, out_tok).
+
+    Heuristic-first: only calls Claude when the text is ambiguous.
+    Returns 'CV' on any error to avoid blocking valid uploads.
+    """
+    if not text.strip():
+        return "CV", 0, 0
+
+    text_lower = text.lower()
+    cv_indicators = sum(1 for w in [
+        "experience", "education", "skills", "resume", "curriculum vitae",
+        "الخبرة", "التعليم", "المهارات", "السيرة الذاتية",
+    ] if w in text_lower)
+    jd_indicators = sum(1 for w in [
+        "we are looking", "we are seeking", "job description",
+        "responsibilities include", "requirements:", "about the role",
+        "what you'll do", "what you will do", "we offer", "salary range",
+        "benefits package", "apply now", "apply by", "working hours",
+        "contract type", "you will be responsible", "you will have",
+        "ideal candidate", "minimum qualifications", "preferred qualifications",
+        "equal opportunity employer",
+    ] if w in text_lower)
+
+    if jd_indicators >= 3 and cv_indicators <= 1:
+        return "OTHER", 0, 0
+    if cv_indicators >= 3:
+        return "CV", 0, 0
+    if not api_key:
+        return "CV", 0, 0
+
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=5,
+            messages=[{
+                "role": "user",
+                "content": (
+                    "Is this document a CV/resume, or is it something else such as a "
+                    "job offer, job description, contract, or other document? "
+                    "Reply with only one word: CV or OTHER\n\n"
+                    + text[:3000]
+                ),
+            }],
+        )
+        in_tok = response.usage.input_tokens if response.usage else 0
+        out_tok = response.usage.output_tokens if response.usage else 0
+        answer = response.content[0].text.strip().upper()
+        return ("OTHER" if "OTHER" in answer else "CV"), in_tok, out_tok
+    except Exception:
+        return "CV", 0, 0  # fail safe — never block a valid CV
+
+
 # ── Projects parser ───────────────────────────────────────────────────────────
 
 def _parse_projects(text: str) -> list[dict]:
@@ -536,19 +733,45 @@ def _parse_projects(text: str) -> list[dict]:
 
 # ── Main parse function ───────────────────────────────────────────────────────
 
-def parse_cv(file: BinaryIO, filename: str, api_key: str = "") -> tuple[dict, int, int]:
+def parse_cv(
+    file: BinaryIO,
+    filename: str,
+    api_key: str = "",
+    check_doc_type: bool = True,
+) -> tuple[dict, int, int]:
     """Parse an uploaded CV file. Returns (CVData dict, input_tokens, output_tokens).
 
-    input_tokens / output_tokens are non-zero only when a Claude vision call was
-    required to extract text from an image-based PDF (no text layer).
+    input_tokens / output_tokens accumulate all Claude API usage (vision extraction
+    + optional document-type classification call).
+
+    Raises NonCVDocumentError if the document appears to be a job offer / JD.
     """
     raw_text, in_tok, out_tok = extract_text(file, filename, api_key=api_key)
-    sections = _split_into_sections(raw_text)
 
+    # Classify document type (job offer detection) — only when API key available
+    if check_doc_type and api_key and raw_text.strip():
+        doc_type, cls_in, cls_out = _classify_document(raw_text, api_key)
+        in_tok += cls_in
+        out_tok += cls_out
+        if doc_type == "OTHER":
+            raise NonCVDocumentError(
+                "The uploaded file does not appear to be a CV or resume. "
+                "Please upload your CV file."
+            )
+
+    sections = _split_into_sections(raw_text)
     contact = _extract_contact(sections.get("header", ""))
+
+    # DOB: prefer header extraction; fall back to scanning full text
+    dob = contact.pop("dob", "")
+    if not dob:
+        dob_m = _DOB_RE.search(raw_text)
+        if dob_m:
+            dob = dob_m.group(1).strip()
 
     cv_data: dict = {
         **contact,
+        "dob":            dob,
         "summary":        sections.get("summary", "").strip(),
         "experience":     _parse_experience(sections.get("experience", "")),
         "education":      _parse_education(sections.get("education", "")),

@@ -17,13 +17,15 @@ Table schema (run once in your Supabase SQL editor):
       session_id TEXT,
       certificates JSONB,
       cert_input_tokens INTEGER DEFAULT 0,
-      cert_output_tokens INTEGER DEFAULT 0
+      cert_output_tokens INTEGER DEFAULT 0,
+      dob VARCHAR(50)
     );
 
     -- If upgrading an existing table, add the new columns:
     -- ALTER TABLE cv_runs ADD COLUMN IF NOT EXISTS certificates JSONB;
     -- ALTER TABLE cv_runs ADD COLUMN IF NOT EXISTS cert_input_tokens INTEGER DEFAULT 0;
     -- ALTER TABLE cv_runs ADD COLUMN IF NOT EXISTS cert_output_tokens INTEGER DEFAULT 0;
+    -- ALTER TABLE cv_runs ADD COLUMN IF NOT EXISTS dob VARCHAR(50);
 
 Pricing model (claude-sonnet-4-6):
   Input:  $3.00 per 1,000,000 tokens
@@ -90,6 +92,7 @@ def save_cv_run(
     certificates: Optional[list] = None,
     cert_input_tokens: int = 0,
     cert_output_tokens: int = 0,
+    dob: str = "",
 ) -> Optional[str]:
     """Save a completed CV run to Supabase.
 
@@ -115,6 +118,7 @@ def save_cv_run(
         "certificates": certificates or None,
         "cert_input_tokens": cert_input_tokens,
         "cert_output_tokens": cert_output_tokens,
+        "dob": dob or None,
     }
 
     try:

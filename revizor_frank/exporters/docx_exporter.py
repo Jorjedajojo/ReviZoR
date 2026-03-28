@@ -30,10 +30,11 @@ def _add_horizontal_rule(para):
     bottom.set(qn("w:color"), "auto")
 
 
-def export_docx(cv_data: dict, template_name: str, output_path: str) -> str:
+def export_docx(cv_data: dict, template_name: str, output_path: str,
+                template_color: str = "") -> str:
     """Build a .docx CV file. Returns output_path."""
     from revizor_frank.templates import get_template
-    tmpl = get_template(template_name)
+    tmpl = get_template(template_name, primary_color=template_color)
     primary_hex = tmpl.style.docx_primary_hex
     accent_hex = tmpl.style.docx_accent_hex
 
@@ -60,6 +61,8 @@ def export_docx(cv_data: dict, template_name: str, output_path: str) -> str:
         val = cv_data.get(field, "")
         if val:
             contact_parts.append(val)
+    if cv_data.get("dob"):
+        contact_parts.append(f"DOB: {cv_data['dob']}")
     if contact_parts:
         cp = doc.add_paragraph("  |  ".join(contact_parts))
         cp.runs[0].font.size = Pt(9)

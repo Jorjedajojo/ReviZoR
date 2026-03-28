@@ -6,7 +6,8 @@ import os
 import tempfile
 
 
-def export_png(cv_data: dict, template_name: str, output_path: str, dpi: int = 200) -> str:
+def export_png(cv_data: dict, template_name: str, output_path: str, dpi: int = 200,
+               template_color: str = "") -> str:
     """Render the first page of the CV PDF as a PNG. Returns output_path."""
     from revizor_frank.exporters.pdf_exporter import export_pdf
 
@@ -15,7 +16,7 @@ def export_png(cv_data: dict, template_name: str, output_path: str, dpi: int = 2
         tmp_pdf = tmp.name
 
     try:
-        export_pdf(cv_data, template_name, tmp_pdf)
+        export_pdf(cv_data, template_name, tmp_pdf, template_color=template_color)
 
         import fitz  # PyMuPDF
         doc = fitz.open(tmp_pdf)

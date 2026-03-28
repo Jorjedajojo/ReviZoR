@@ -19,6 +19,8 @@ def export_txt(cv_data: dict, output_path: str) -> str:
         val = cv_data.get(field, "")
         if val:
             contact_parts.append(val)
+    if cv_data.get("dob"):
+        contact_parts.append(f"DOB: {cv_data['dob']}")
     if contact_parts:
         lines.append(" | ".join(contact_parts))
     lines.append("")

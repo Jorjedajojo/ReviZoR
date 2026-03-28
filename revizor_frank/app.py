@@ -198,7 +198,7 @@ st.markdown("""
 def _init_state():
     defaults = {
         # CV pipeline
-        "stage":            "select_service",  # select_service|upload|upload_certs|processing|review_changes|results|admin
+        "stage":            "select_service",  # select_service|upload|upload_certs|processing|review_changes|select_template|results|admin
         "session_id":       None,
         "parsed_cv":        None,
         "offline_cv":       None,
@@ -228,6 +228,11 @@ def _init_state():
         "review_editing":         [],   # list of section keys currently in edit mode
         # Inline editor
         "edited_cv_text":   "",
+        "edited_cv":        None,       # parsed CVData dict after user applies edits
+        # Personal details
+        "dob":              "",         # date of birth (extracted or entered by user)
+        # Template + colour
+        "template_color":   "",         # hex colour override for selected template
         # Auth — JWT mode
         "auth_token":       None,
         "refresh_token":    None,
@@ -613,6 +618,9 @@ language, optimizes for your target role.
         st.session_state.cert_output_tokens = 0
         st.session_state.review_decisions = {}
         st.session_state.review_editing = []
+        st.session_state.edited_cv = None
+        st.session_state.edited_cv_text = ""
+        st.session_state.dob = ""
         st.session_state.stage = "upload_certs"
         st.rerun()
 
@@ -789,6 +797,21 @@ def render_upload_certs():
                         st.session_state.stage = "upload"
                         st.rerun()
 
+        # ── Personal details (DOB) ─────────────────────────────────────────────
+        st.divider()
+        st.markdown("### 👤 Personal Details (Optional)")
+        st.caption(
+            "Some applications require a Date of Birth. Leave blank if not needed — "
+            "it will also be auto-extracted from your CV if present."
+        )
+        dob_input = st.text_input(
+            "Date of Birth",
+            value=st.session_state.get("dob", ""),
+            placeholder="e.g. 1 January 1990  or  01/01/1990",
+            key="dob_input_field",
+        )
+        st.session_state.dob = dob_input
+
         # ── Skip entirely (no files classified yet) ────────────────────────────
         if not classified:
             st.markdown("<br>", unsafe_allow_html=True)
@@ -863,9 +886,20 @@ def _run_pipeline():
         # 1. Parse
         status.info(f"⚙️ {S['parsing_cv']}")
         file_bytes = io.BytesIO(cv_bytes)
-        parsed, pdf_in_tok, pdf_out_tok = cv_parser.parse_cv(
-            file_bytes, filename, api_key=ANTHROPIC_API_KEY
-        )
+        from revizor_frank.core.cv_parser import NonCVDocumentError
+        try:
+            parsed, pdf_in_tok, pdf_out_tok = cv_parser.parse_cv(
+                file_bytes, filename, api_key=ANTHROPIC_API_KEY
+            )
+        except NonCVDocumentError:
+            progress.empty()
+            status.empty()
+            st.error(
+                "⚠️ This file doesn't appear to be a CV or resume. "
+                "Please upload your CV file instead."
+            )
+            st.session_state.stage = "upload"
+            return
         # Accumulate vision-extraction tokens into the cert bucket
         st.session_state.cert_input_tokens  = st.session_state.get("cert_input_tokens",  0) + pdf_in_tok
         st.session_state.cert_output_tokens = st.session_state.get("cert_output_tokens", 0) + pdf_out_tok
@@ -881,6 +915,13 @@ def _run_pipeline():
                         "issuer": cert.get("issuer", ""),
                         "date": cert.get("date", ""),
                     })
+        # DOB: prefer manually entered value from upload_certs stage
+        user_dob = st.session_state.get("dob", "").strip()
+        if user_dob:
+            parsed["dob"] = user_dob
+        elif parsed.get("dob"):
+            st.session_state.dob = parsed["dob"]  # reflect extracted value back
+
         # Merge any additional CV files uploaded in the cert stage
         additional_cv_data = st.session_state.get("additional_cv_data", [])
         if additional_cv_data:
@@ -992,6 +1033,7 @@ def _run_pipeline():
                 certificates=st.session_state.get("certificates") or None,
                 cert_input_tokens=st.session_state.get("cert_input_tokens", 0),
                 cert_output_tokens=st.session_state.get("cert_output_tokens", 0),
+                dob=st.session_state.get("dob", ""),
             )
         except Exception:
             pass  # Supabase save is best-effort; never break the main flow
@@ -1001,12 +1043,12 @@ def _run_pipeline():
         status.empty()
         progress.empty()
 
-        # Route to review stage when AI optimisation ran, otherwise go straight to results
+        # Route to review stage when AI ran, otherwise go to template selection
         if st.session_state.get("ai_cv_general"):
             _init_review_state()
             st.session_state.stage = "review_changes"
         else:
-            st.session_state.stage = "results"
+            st.session_state.stage = "select_template"
         st.rerun()
 
     except Exception as e:
@@ -1185,7 +1227,7 @@ def render_review_changes():
         if st.button("Finalise CV →", type="primary", use_container_width=True,
                      disabled=not all_done):
             st.session_state.ai_cv_general = _apply_review_decisions()
-            st.session_state.stage = "results"
+            st.session_state.stage = "select_template"
             st.rerun()
 
     if not all_done:
@@ -1258,6 +1300,198 @@ def render_review_changes():
                             editing.append(key)
                         st.session_state.review_editing = editing
                         st.rerun()
+
+
+# ── Template selection stage ─────────────────────────────────────────────────
+
+_SAMPLE_CV: dict = {
+    "name": "Alexandra Chen",
+    "email": "alex.chen@example.com",
+    "phone": "+1 (555) 123-4567",
+    "location": "San Francisco, CA",
+    "linkedin": "linkedin.com/in/alexchen",
+    "website": "",
+    "dob": "",
+    "summary": (
+        "Results-driven software engineer with 8+ years of experience building scalable "
+        "web applications and leading cross-functional engineering teams."
+    ),
+    "experience": [
+        {
+            "title": "Senior Software Engineer",
+            "company": "TechCorp Inc.",
+            "location": "San Francisco, CA",
+            "start_date": "Mar 2020",
+            "end_date": "Present",
+            "bullets": [
+                "Led microservices platform migration reducing API latency by 40%",
+                "Mentored team of 5 junior engineers and conducted weekly code reviews",
+            ],
+        },
+        {
+            "title": "Software Engineer",
+            "company": "StartupXYZ",
+            "location": "New York, NY",
+            "start_date": "Jan 2018",
+            "end_date": "Feb 2020",
+            "bullets": ["Built RESTful APIs serving 2M+ daily requests"],
+        },
+    ],
+    "education": [
+        {
+            "degree": "B.S. Computer Science",
+            "institution": "Stanford University",
+            "location": "Stanford, CA",
+            "year": "2017",
+            "gpa": "",
+            "honors": "",
+        }
+    ],
+    "skills": {
+        "categories": [
+            {"name": "Technical Competencies", "items": ["Python", "JavaScript", "React", "AWS", "Docker", "PostgreSQL"]},
+            {"name": "Core Competencies",      "items": ["Leadership", "Communication", "Strategic Planning"]},
+        ]
+    },
+    "certifications": [{"name": "AWS Solutions Architect", "issuer": "Amazon", "date": "2022"}],
+    "languages": ["English (Native)", "Mandarin (Fluent)"],
+    "projects": [],
+    "raw_text": "",
+}
+
+_COLOR_PRESETS: list[dict] = [
+    {"name": "Navy & White",          "hex": "#1a3a5c"},
+    {"name": "Charcoal & Gold",       "hex": "#2c2c2c"},
+    {"name": "Forest Green",          "hex": "#2d5a27"},
+    {"name": "Burgundy",              "hex": "#722f37"},
+    {"name": "Midnight Blue",         "hex": "#191970"},
+    {"name": "Black & White",         "hex": "#000000"},
+    {"name": "Teal",                  "hex": "#008080"},
+    {"name": "Slate & Coral",         "hex": "#708090"},
+]
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _generate_template_thumbnail(template_name: str) -> bytes:
+    """Generate a small first-page PNG for a template using sample data. Cached for 1 h."""
+    from revizor_frank.exporters.png_exporter import export_png
+    import tempfile as _tmp
+    _dir = Path(_tmp.gettempdir()) / "revizor_thumbs"
+    _dir.mkdir(exist_ok=True)
+    out = str(_dir / f"thumb_{template_name}.png")
+    try:
+        export_png(_SAMPLE_CV, template_name, out, dpi=72)
+        with open(out, "rb") as f:
+            return f.read()
+    except Exception:
+        return b""
+
+
+def render_select_template():
+    """Template & colour selection stage — shown before the download results."""
+    st.markdown(f"# 📄 {APP_NAME}")
+    st.markdown("## Choose Your Template & Colour")
+    st.caption("Pick any template, customise the colour, preview with your actual CV, then proceed to download.")
+    st.divider()
+
+    selected = st.session_state.get("selected_template", DEFAULT_TEMPLATE)
+    current_color = st.session_state.get("template_color", "")
+
+    # ── Colour picker ─────────────────────────────────────────────────────────
+    st.markdown("### 🎨 Colour Scheme")
+    preset_cols = st.columns(len(_COLOR_PRESETS))
+    for i, preset in enumerate(_COLOR_PRESETS):
+        with preset_cols[i]:
+            is_active = current_color == preset["hex"]
+            swatch = f'<div style="width:100%;height:24px;background:{preset["hex"]};' \
+                     f'border-radius:4px;border:2px solid {"#0d6efd" if is_active else "#dee2e6"}"></div>'
+            st.markdown(swatch, unsafe_allow_html=True)
+            if st.button(preset["name"], key=f"color_preset_{i}",
+                         use_container_width=True,
+                         type="primary" if is_active else "secondary"):
+                st.session_state.template_color = preset["hex"]
+                st.rerun()
+
+    custom_col, _ = st.columns([1, 2])
+    with custom_col:
+        new_color = st.color_picker(
+            "Custom colour",
+            value=current_color if current_color else "#1a3a5c",
+            key="template_color_picker",
+        )
+    if new_color != current_color:
+        st.session_state.template_color = new_color
+        st.rerun()
+
+    st.divider()
+
+    # ── Template grid ─────────────────────────────────────────────────────────
+    st.markdown("### 📐 Template")
+    tmpl_list = list(TEMPLATES.items())
+    COLS = 4
+    for row_start in range(0, len(tmpl_list), COLS):
+        row = tmpl_list[row_start: row_start + COLS]
+        cols = st.columns(len(row))
+        for j, (tkey, tcfg) in enumerate(row):
+            with cols[j]:
+                thumb = _generate_template_thumbnail(tkey)
+                if thumb:
+                    border = "3px solid #0d6efd" if tkey == selected else "2px solid #dee2e6"
+                    st.markdown(
+                        f'<div style="border:{border};border-radius:6px;overflow:hidden">',
+                        unsafe_allow_html=True,
+                    )
+                    st.image(thumb, use_container_width=True)
+                    st.markdown("</div>", unsafe_allow_html=True)
+                is_sel = tkey == selected
+                if st.button(
+                    f"{'✓ ' if is_sel else ''}{tcfg['name']}",
+                    key=f"tmpl_btn_{tkey}",
+                    use_container_width=True,
+                    type="primary" if is_sel else "secondary",
+                ):
+                    st.session_state.selected_template = tkey
+                    st.rerun()
+                st.caption(tcfg.get("best_for", ""))
+
+    st.divider()
+
+    # ── Live preview with actual CV data ──────────────────────────────────────
+    cv_source = (
+        st.session_state.get("edited_cv") or
+        st.session_state.get("ai_cv_general") or
+        st.session_state.get("offline_cv") or {}
+    )
+    if cv_source:
+        st.markdown("### 👁️ Live Preview")
+        tcolor = st.session_state.get("template_color", "")
+        try:
+            preview_bytes = _build_export_bytes(cv_source, "png", selected, tcolor)
+            if preview_bytes:
+                p_col, _ = st.columns([2, 1])
+                with p_col:
+                    st.image(
+                        preview_bytes,
+                        caption=f"Preview: {TEMPLATES[selected]['name']}",
+                        use_container_width=True,
+                    )
+        except Exception:
+            pass
+        st.divider()
+
+    col_proceed, col_back = st.columns([2, 1])
+    with col_proceed:
+        if st.button("Use This Template — Download My CV →",
+                     type="primary", use_container_width=True):
+            st.session_state.stage = "results"
+            st.rerun()
+    with col_back:
+        if st.button("← Back", use_container_width=True):
+            if st.session_state.get("ai_cv_general"):
+                st.session_state.stage = "review_changes"
+            else:
+                st.session_state.stage = "upload_certs"
+            st.rerun()
 
 
 # ── Results stage ─────────────────────────────────────────────────────────────
@@ -1509,18 +1743,27 @@ def _render_edit_cv_tab(include_linkedin: bool):
     if st.button(btn_label, type="primary"):
         st.session_state.edited_cv_text = edited
 
+        # Parse edited text back to a CVData dict so exports use the edits
+        try:
+            from revizor_frank.core.cv_parser import parse_cv as _parse_cv
+            _raw = io.BytesIO(edited.encode("utf-8"))
+            edited_cv_dict, _, _ = _parse_cv(_raw, "edited_cv.txt",
+                                             api_key="", check_doc_type=False)
+            # Preserve fields not reconstructable from plain text
+            for _field in ("dob", "linkedin", "website"):
+                if not edited_cv_dict.get(_field) and (cv_source or {}).get(_field):
+                    edited_cv_dict[_field] = (cv_source or {})[_field]
+            st.session_state.edited_cv = edited_cv_dict
+        except Exception:
+            st.session_state.edited_cv = None
+
         if include_linkedin and st.session_state.online and st.session_state.ai_cv_general:
             with st.spinner("Regenerating LinkedIn profile from edited CV…"):
                 try:
                     from revizor_frank.core import cv_optimizer
-                    # Build a minimal CVData dict from the edited text
-                    from revizor_frank.core.cv_parser import parse_cv as _parse_cv
-                    import io as _io
-                    raw_bytes = _io.BytesIO(edited.encode("utf-8"))
-                    raw_bytes.name = "edited_cv.txt"
-                    edited_parsed, _, _ = _parse_cv(raw_bytes, "edited_cv.txt")
+                    base_cv = st.session_state.get("edited_cv") or st.session_state.ai_cv_general
                     linkedin, in_tok, out_tok = cv_optimizer.generate_linkedin(
-                        edited_parsed,
+                        base_cv,
                         st.session_state.ai_cv_general,
                         st.session_state.job_description,
                     )
@@ -1537,7 +1780,7 @@ def _render_edit_cv_tab(include_linkedin: bool):
         elif include_linkedin and not st.session_state.online:
             st.info("LinkedIn refresh requires internet connection.")
         else:
-            st.success("Edits saved.")
+            st.success("Edits saved — downloads will use your edited CV.")
 
 
 def render_admin_dashboard():
@@ -1705,8 +1948,13 @@ def _render_ats_issues(ats: dict):
 def _render_downloads():
     st.markdown(f"### {S['download_header']}")
     template = st.session_state.selected_template
+    template_color = st.session_state.get("template_color", "")
     template_name = TEMPLATES.get(template, {}).get("name", template)
-    st.caption(f"Template: **{template_name}**  ·  All formats are ATS-safe")
+    color_note = f"  ·  colour: <span style='color:{template_color};font-weight:bold'>{template_color}</span>" if template_color else ""
+    st.caption(
+        f"Template: **{template_name}**  ·  All formats are ATS-safe{color_note}",
+        unsafe_allow_html=True,
+    )
 
     has_general = bool(st.session_state.ai_cv_general or st.session_state.offline_cv)
     has_jd_cv = bool(st.session_state.ai_cv_jd)
@@ -1715,23 +1963,29 @@ def _render_downloads():
     def get_cv(variant: str) -> dict:
         if variant == "jd":
             return st.session_state.ai_cv_jd or st.session_state.offline_cv
-        return st.session_state.ai_cv_general or st.session_state.offline_cv
+        # Prefer edited_cv (user's manual edits) over ai_cv_general
+        return (st.session_state.get("edited_cv") or
+                st.session_state.ai_cv_general or
+                st.session_state.offline_cv)
 
     def make_download_row(variant_label: str, cv_key: str):
         cv = get_cv(cv_key)
         if not cv:
             st.info(f"No {variant_label} output available.")
             return
+        # Show edit badge if user edits are active
+        if cv_key != "jd" and st.session_state.get("edited_cv"):
+            variant_label = f"{variant_label} ✏️"
         st.markdown(f"#### {variant_label}")
         fname_base = (cv.get("name", "cv") or "cv").replace(" ", "_")
         suffix = "_JD" if cv_key == "jd" else "_General"
         cols = st.columns(6)
 
-        _format_download_btn(cols[0], cv, "docx", template, f"{fname_base}{suffix}.docx")
-        _format_download_btn(cols[1], cv, "odt",  template, f"{fname_base}{suffix}.odt")
-        _format_download_btn(cols[2], cv, "pdf",  template, f"{fname_base}{suffix}.pdf")
-        _format_download_btn(cols[3], cv, "png",  template, f"{fname_base}{suffix}.png")
-        _format_download_btn(cols[4], cv, "txt",  template, f"{fname_base}{suffix}.txt")
+        _format_download_btn(cols[0], cv, "docx", template, f"{fname_base}{suffix}.docx", template_color)
+        _format_download_btn(cols[1], cv, "odt",  template, f"{fname_base}{suffix}.odt",  template_color)
+        _format_download_btn(cols[2], cv, "pdf",  template, f"{fname_base}{suffix}.pdf",  template_color)
+        _format_download_btn(cols[3], cv, "png",  template, f"{fname_base}{suffix}.png",  template_color)
+        _format_download_btn(cols[4], cv, "txt",  template, f"{fname_base}{suffix}.txt",  template_color)
 
     if has_general:
         make_download_row("📄 General ATS-Optimized CV", "general")
@@ -1751,7 +2005,8 @@ def _render_downloads():
         )
 
 
-def _format_download_btn(col, cv: dict, fmt: str, template: str, filename: str):
+def _format_download_btn(col, cv: dict, fmt: str, template: str, filename: str,
+                         template_color: str = ""):
     LABELS = {
         "docx": "⬇️ Word",
         "odt":  "⬇️ ODT",
@@ -1767,7 +2022,7 @@ def _format_download_btn(col, cv: dict, fmt: str, template: str, filename: str):
         "txt":  "text/plain",
     }
     try:
-        data = _build_export_bytes(cv, fmt, template)
+        data = _build_export_bytes(cv, fmt, template, template_color)
         with col:
             st.download_button(
                 label=LABELS.get(fmt, fmt),
@@ -1775,7 +2030,7 @@ def _format_download_btn(col, cv: dict, fmt: str, template: str, filename: str):
                 file_name=filename,
                 mime=MIMES.get(fmt, "application/octet-stream"),
                 use_container_width=True,
-                key=f"dl_{fmt}_{filename}",
+                key=f"dl_{fmt}_{filename}_{template_color}",
             )
     except Exception as e:
         with col:
@@ -1783,9 +2038,9 @@ def _format_download_btn(col, cv: dict, fmt: str, template: str, filename: str):
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def _build_export_bytes(cv: dict, fmt: str, template: str) -> bytes:
+def _build_export_bytes(cv: dict, fmt: str, template: str,
+                        template_color: str = "") -> bytes:
     """Build export bytes. Cached to avoid re-generating on every rerun."""
-    # Use a stable temp dir tied to the session
     tmp_dir = Path(tempfile.gettempdir()) / "revizor_frank"
     tmp_dir.mkdir(exist_ok=True)
     out_path = str(tmp_dir / f"export_{uuid.uuid4().hex}.{fmt}")
@@ -1793,16 +2048,16 @@ def _build_export_bytes(cv: dict, fmt: str, template: str) -> bytes:
     try:
         if fmt == "pdf":
             from revizor_frank.exporters.pdf_exporter import export_pdf
-            export_pdf(cv, template, out_path)
+            export_pdf(cv, template, out_path, template_color=template_color)
         elif fmt == "png":
             from revizor_frank.exporters.png_exporter import export_png
-            export_png(cv, template, out_path)
+            export_png(cv, template, out_path, template_color=template_color)
         elif fmt == "docx":
             from revizor_frank.exporters.docx_exporter import export_docx
-            export_docx(cv, template, out_path)
+            export_docx(cv, template, out_path, template_color=template_color)
         elif fmt == "odt":
             from revizor_frank.exporters.odt_exporter import export_odt
-            export_odt(cv, template, out_path)
+            export_odt(cv, template, out_path, template_color=template_color)
         elif fmt == "txt":
             from revizor_frank.exporters.txt_exporter import export_txt
             export_txt(cv, out_path)
@@ -1856,6 +2111,8 @@ def main():
         _run_pipeline()
     elif stage == "review_changes":
         render_review_changes()
+    elif stage == "select_template":
+        render_select_template()
     elif stage == "results":
         render_results()
     elif stage == "admin":

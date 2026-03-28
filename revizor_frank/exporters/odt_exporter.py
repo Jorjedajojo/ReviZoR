@@ -25,10 +25,11 @@ def _make_style(doc, name: str, family: str = "paragraph", **props) -> Style:
     return style
 
 
-def export_odt(cv_data: dict, template_name: str, output_path: str) -> str:
+def export_odt(cv_data: dict, template_name: str, output_path: str,
+               template_color: str = "") -> str:
     """Build an .odt CV file. Returns output_path."""
     from revizor_frank.templates import get_template
-    tmpl = get_template(template_name)
+    tmpl = get_template(template_name, primary_color=template_color)
     primary = f"#{tmpl.style.docx_primary_hex}"
     accent = f"#{tmpl.style.docx_accent_hex}"
 
@@ -87,6 +88,8 @@ def export_odt(cv_data: dict, template_name: str, output_path: str) -> str:
         for f in ("email", "phone", "location", "linkedin", "website")
         if cv_data.get(f)
     ]
+    if cv_data.get("dob"):
+        contact_parts.append(f"DOB: {cv_data['dob']}")
     if contact_parts:
         add_para("  |  ".join(contact_parts), "ContactStyle")
 

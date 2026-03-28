@@ -10,10 +10,12 @@ All templates use single-column layout for maximum ATS compatibility.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
 from reportlab.lib import colors
+from reportlab.lib.enums import TA_RIGHT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
@@ -24,6 +26,54 @@ from reportlab.platypus import (
     KeepTogether,
 )
 from reportlab.platypus import SimpleDocTemplate
+
+# ── Arabic text support ───────────────────────────────────────────────────────
+
+_ARABIC_CHAR_RE = re.compile(r"[\u0600-\u06FF\u0750-\u077F]")
+_arabic_font_name: str = ""   # cached font name; empty = not yet checked
+
+
+def _has_arabic(text: str) -> bool:
+    return bool(_ARABIC_CHAR_RE.search(text))
+
+
+def _reshape_arabic(text: str) -> str:
+    """Reshape and apply BiDi algorithm to Arabic text for correct PDF rendering."""
+    try:
+        import arabic_reshaper
+        from bidi.algorithm import get_display
+        return get_display(arabic_reshaper.reshape(text))
+    except ImportError:
+        return text
+
+
+def _get_arabic_font() -> str:
+    """Find and register a system font with Arabic support. Returns font name or ''."""
+    global _arabic_font_name
+    if _arabic_font_name:
+        return _arabic_font_name
+
+    import os
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+
+    candidates = [
+        ("FreeSans",       "/usr/share/fonts/truetype/freefont/FreeSans.ttf"),
+        ("DejaVuSans",     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+        ("NotoSans",       "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf"),
+        ("LiberationSans", "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"),
+        ("Arial",          "C:/Windows/Fonts/arial.ttf"),
+    ]
+    for fname, fpath in candidates:
+        if os.path.exists(fpath):
+            try:
+                pdfmetrics.registerFont(TTFont(fname, fpath))
+                _arabic_font_name = fname
+                return fname
+            except Exception:
+                continue
+    _arabic_font_name = "Helvetica"  # fallback — Arabic glyphs won't show perfectly
+    return _arabic_font_name
 
 
 @dataclass
@@ -144,17 +194,28 @@ class BaseTemplate:
 
     def _contact_line(self, cv: dict) -> str:
         parts = []
-        if cv.get("email"):
-            parts.append(cv["email"])
-        if cv.get("phone"):
-            parts.append(cv["phone"])
-        if cv.get("location"):
-            parts.append(cv["location"])
-        if cv.get("linkedin"):
-            parts.append(cv["linkedin"])
-        if cv.get("website"):
-            parts.append(cv["website"])
+        for field in ("email", "phone", "location", "linkedin", "website"):
+            if cv.get(field):
+                parts.append(cv[field])
+        if cv.get("dob"):
+            parts.append(f"DOB: {cv['dob']}")
         return "  |  ".join(parts)
+
+    def _safe_para(self, text: str, style: ParagraphStyle) -> Paragraph:
+        """Return a Paragraph with Arabic reshaping + RTL alignment if needed."""
+        if not text:
+            return Paragraph("", style)
+        if _has_arabic(text):
+            shaped = _reshape_arabic(text)
+            ar_font = _get_arabic_font()
+            ar_style = ParagraphStyle(
+                "ar_safe",
+                parent=style,
+                fontName=ar_font,
+                alignment=TA_RIGHT,
+            )
+            return Paragraph(shaped, ar_style)
+        return Paragraph(text, style)
 
     # ── Main render method (shared logic, subclasses can override) ────────────
 
@@ -170,7 +231,7 @@ class BaseTemplate:
         bullets = self._bullet_style()
 
         # ── Header ────────────────────────────────────────────────────────────
-        story.append(Paragraph(cv.get("name", ""), ns))
+        story.append(self._safe_para(cv.get("name", ""), ns))
         contact_line = self._contact_line(cv)
         if contact_line:
             story.append(Paragraph(contact_line, cs))
@@ -179,7 +240,7 @@ class BaseTemplate:
         # ── Summary ───────────────────────────────────────────────────────────
         if cv.get("summary"):
             story.extend(self._section_heading("Professional Summary"))
-            story.append(Paragraph(cv["summary"], bs))
+            story.append(self._safe_para(cv["summary"], bs))
 
         # ── Experience ────────────────────────────────────────────────────────
         if cv.get("experience"):
