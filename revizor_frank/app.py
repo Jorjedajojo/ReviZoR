@@ -760,6 +760,16 @@ def _run_pipeline():
         st.rerun()
         return
 
+    # Explicit API key check — required for image-based PDF vision fallback
+    if not ANTHROPIC_API_KEY or not ANTHROPIC_API_KEY.strip():
+        st.error(
+            "**API key not found in secrets.** "
+            "Add `ANTHROPIC_API_KEY` to your Streamlit secrets (Settings → Secrets). "
+            "It is required to process CVs, including image-based PDFs."
+        )
+        st.session_state.stage = "upload"
+        return
+
     st.session_state.error = None
     st.session_state.total_input_tokens = 0
     st.session_state.total_output_tokens = 0

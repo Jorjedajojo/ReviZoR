@@ -77,41 +77,59 @@ def extract_text_from_pdf(file: BinaryIO, api_key: str = "") -> tuple[str, int, 
         pass
 
     # ── Step 3: Claude vision (image-based PDF) ───────────────────────────────
-    # Claude natively supports PDF documents sent as base64 via the document type.
+    # Both local extractors returned < 100 chars — this is an image-based PDF.
+    # Notify the Streamlit UI so the user knows what's happening.
+    try:
+        import streamlit as _st
+        _st.toast("📄 Image-based PDF detected — using Claude Vision to extract text…", icon="👁️")
+    except Exception:
+        pass  # not running inside Streamlit (e.g. unit tests)
+
     key = api_key or ""
     if not key:
         raise ValueError(
-            "This CV appears to be an image-based PDF (no text layer). "
-            "An Anthropic API key is required to extract text via Claude vision."
+            "This CV is an image-based PDF (no text layer was found by pdfminer or PyMuPDF). "
+            "An Anthropic API key is required to extract text via Claude vision. "
+            "Please add ANTHROPIC_API_KEY to your Streamlit secrets."
         )
+
     b64 = base64.standard_b64encode(data).decode()
     client = anthropic.Anthropic(api_key=key)
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=4096,
-        messages=[{
-            "role": "user",
-            "content": [
-                {
-                    "type": "document",
-                    "source": {
-                        "type": "base64",
-                        "media_type": "application/pdf",
-                        "data": b64,
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=4096,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "document",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "application/pdf",
+                            "data": b64,
+                        },
                     },
-                },
-                {
-                    "type": "text",
-                    "text": (
-                        "Extract all text content from this CV/resume exactly as it appears. "
-                        "Include every section, every line, every detail — contact information, "
-                        "summary, work experience, education, skills, certifications, languages, "
-                        "and any other sections present. Output plain text only, no markdown."
-                    ),
-                },
-            ],
-        }],
-    )
+                    {
+                        "type": "text",
+                        "text": (
+                            "Extract all text content from this CV/resume exactly as it appears. "
+                            "Include every section, every line, every detail — contact information, "
+                            "summary, work experience, education, skills, certifications, languages, "
+                            "and any other sections present. Output plain text only, no markdown."
+                        ),
+                    },
+                ],
+            }],
+        )
+    except Exception as e:
+        try:
+            import streamlit as _st
+            _st.error(f"Vision extraction failed: {e}")
+        except Exception:
+            pass
+        raise
+
     in_tok  = response.usage.input_tokens  if response.usage else 0
     out_tok = response.usage.output_tokens if response.usage else 0
     return response.content[0].text, in_tok, out_tok
