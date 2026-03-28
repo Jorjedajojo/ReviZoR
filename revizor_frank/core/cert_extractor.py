@@ -166,5 +166,184 @@ def extract_certificate(file_bytes: bytes, filename: str) -> tuple[dict, int, in
     elif ext == ".png":
         return extract_from_image_bytes(file_bytes, "image/png")
     else:
-        # Unknown type: return a stub with filename as name
         return {"name": Path(filename).stem, "issuer": "", "date": "", "credential_id": ""}, 0, 0
+
+
+# ── Document type detection ───────────────────────────────────────────────────
+
+def detect_document_type(file_bytes: bytes, filename: str) -> tuple[str, int, int]:
+    """Classify a document as 'CERTIFICATE' or 'CV'. Returns (type, in_tok, out_tok).
+
+    Uses a minimal Claude call (max_tokens=10) to keep cost negligible.
+    Text-based files are classified via text; images/image PDFs via vision.
+    """
+    ext = Path(filename).suffix.lower()
+    client = _get_client()
+    _CLASSIFY_PROMPT = (
+        "Is this document a certificate/qualification/credential or a CV/resume? "
+        "Reply with exactly one word: CERTIFICATE or CV"
+    )
+
+    # ── Extract text for text-based formats ───────────────────────────────────
+    text = ""
+    if ext == ".pdf":
+        try:
+            from pdfminer.high_level import extract_text as _pdfm
+            text = _pdfm(io.BytesIO(file_bytes))
+        except Exception:
+            pass
+    elif ext == ".docx":
+        try:
+            from docx import Document as _Doc
+            doc = _Doc(io.BytesIO(file_bytes))
+            text = "\n".join(p.text for p in doc.paragraphs)
+        except Exception:
+            pass
+    elif ext == ".txt":
+        try:
+            text = file_bytes.decode("utf-8", errors="replace")
+        except Exception:
+            pass
+
+    # ── Text-based classification ─────────────────────────────────────────────
+    if text and len(text.strip()) > 50:
+        response = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=10,
+            messages=[{"role": "user", "content": f"{_CLASSIFY_PROMPT}\n\n{text[:2000]}"}],
+        )
+    elif ext in (".jpg", ".jpeg", ".png"):
+        media = "image/jpeg" if ext in (".jpg", ".jpeg") else "image/png"
+        b64 = base64.standard_b64encode(file_bytes).decode()
+        response = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=10,
+            messages=[{"role": "user", "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": media, "data": b64}},
+                {"type": "text",  "text": _CLASSIFY_PROMPT},
+            ]}],
+        )
+    elif ext == ".pdf":
+        # Image-based PDF — use document vision
+        b64 = base64.standard_b64encode(file_bytes).decode()
+        response = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=10,
+            messages=[{"role": "user", "content": [
+                {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": b64}},
+                {"type": "text",     "text": _CLASSIFY_PROMPT},
+            ]}],
+        )
+    else:
+        return "CERTIFICATE", 0, 0
+
+    in_tok  = response.usage.input_tokens  if response.usage else 0
+    out_tok = response.usage.output_tokens if response.usage else 0
+    raw = response.content[0].text.strip().upper()
+    doc_type = "CV" if "CV" in raw or "RESUME" in raw else "CERTIFICATE"
+    return doc_type, in_tok, out_tok
+
+
+# ── CV extraction from arbitrary document ─────────────────────────────────────
+
+def extract_cv_data_from_file(
+    file_bytes: bytes, filename: str, api_key: str = ""
+) -> tuple[dict, int, int]:
+    """Parse a CV/resume document and return (CVData dict, in_tok, out_tok).
+
+    Delegates to cv_parser.parse_cv so all three extraction strategies
+    (pdfminer → PyMuPDF → Claude vision) are available.
+    """
+    from revizor_frank.core.cv_parser import parse_cv
+    return parse_cv(io.BytesIO(file_bytes), filename, api_key=api_key)
+
+
+# ── CV data merge ─────────────────────────────────────────────────────────────
+
+def merge_cv_data(base: dict, new: dict) -> dict:
+    """Merge new CV data into base, adding only non-duplicate information.
+
+    Deduplication rules:
+    - experience: by (title.lower, company.lower)
+    - education:  by (degree.lower, institution.lower)
+    - skills:     by item.lower within matching categories; new categories added
+    - certs:      by name.lower
+    - languages:  by language.lower
+    - projects:   by name.lower
+    - scalar fields (name, email, …): fill only if empty in base
+    """
+    import copy
+    merged = copy.deepcopy(base)
+
+    # Scalar fields: fill blanks only
+    for field in ("name", "email", "phone", "location", "linkedin", "website", "summary"):
+        if not merged.get(field) and new.get(field):
+            merged[field] = new[field]
+
+    # Experience
+    existing_exp = {
+        (e.get("title", "").lower().strip(), e.get("company", "").lower().strip())
+        for e in merged.get("experience", [])
+    }
+    for exp in new.get("experience", []):
+        key = (exp.get("title", "").lower().strip(), exp.get("company", "").lower().strip())
+        if key not in existing_exp:
+            merged.setdefault("experience", []).append(exp)
+            existing_exp.add(key)
+
+    # Education
+    existing_edu = {
+        (e.get("degree", "").lower().strip(), e.get("institution", "").lower().strip())
+        for e in merged.get("education", [])
+    }
+    for edu in new.get("education", []):
+        key = (edu.get("degree", "").lower().strip(), edu.get("institution", "").lower().strip())
+        if key not in existing_edu:
+            merged.setdefault("education", []).append(edu)
+            existing_edu.add(key)
+
+    # Skills — merge by category, dedup items
+    all_items_lower: set[str] = set()
+    for cat in merged.get("skills", {}).get("categories", []):
+        for item in cat.get("items", []):
+            all_items_lower.add(item.lower().strip())
+
+    for new_cat in new.get("skills", {}).get("categories", []):
+        matched_cat = next(
+            (c for c in merged.setdefault("skills", {}).setdefault("categories", [])
+             if c.get("name", "").lower() == new_cat.get("name", "").lower()),
+            None,
+        )
+        for item in new_cat.get("items", []):
+            if item.lower().strip() not in all_items_lower:
+                if matched_cat:
+                    matched_cat.setdefault("items", []).append(item)
+                else:
+                    merged["skills"]["categories"].append(
+                        {"name": new_cat["name"], "items": [item]}
+                    )
+                    matched_cat = merged["skills"]["categories"][-1]
+                all_items_lower.add(item.lower().strip())
+
+    # Certifications
+    existing_certs = {c.get("name", "").lower().strip() for c in merged.get("certifications", [])}
+    for cert in new.get("certifications", []):
+        if cert.get("name", "").lower().strip() not in existing_certs:
+            merged.setdefault("certifications", []).append(cert)
+            existing_certs.add(cert.get("name", "").lower().strip())
+
+    # Languages
+    existing_langs = {lang.lower().strip() for lang in merged.get("languages", [])}
+    for lang in new.get("languages", []):
+        if lang.lower().strip() not in existing_langs:
+            merged.setdefault("languages", []).append(lang)
+            existing_langs.add(lang.lower().strip())
+
+    # Projects
+    existing_proj = {p.get("name", "").lower().strip() for p in merged.get("projects", [])}
+    for proj in new.get("projects", []):
+        if proj.get("name", "").lower().strip() not in existing_proj:
+            merged.setdefault("projects", []).append(proj)
+            existing_proj.add(proj.get("name", "").lower().strip())
+
+    return merged

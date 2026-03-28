@@ -198,7 +198,7 @@ st.markdown("""
 def _init_state():
     defaults = {
         # CV pipeline
-        "stage":            "select_service",  # select_service | upload | processing | results
+        "stage":            "select_service",  # select_service|upload|upload_certs|processing|review_changes|results|admin
         "session_id":       None,
         "parsed_cv":        None,
         "offline_cv":       None,
@@ -216,12 +216,16 @@ def _init_state():
         "coupon_code":      "",
         "total_input_tokens":  0,
         "total_output_tokens": 0,
-        # Certificate upload
+        # Certificate / document upload
         "uploaded_cv_bytes":      None,
         "certificates":           [],   # confirmed cert dicts merged into CV
-        "pending_cert_results":   [],   # extracted but not yet confirmed
+        "classified_files":       [],   # [{filename, type, data}] from detect_document_type
+        "additional_cv_data":     [],   # cv_data dicts from extra CV uploads
         "cert_input_tokens":      0,
         "cert_output_tokens":     0,
+        # Review stage
+        "review_decisions":       {},   # {key: {label, original, revised, status, text}}
+        "review_editing":         [],   # list of section keys currently in edit mode
         # Inline editor
         "edited_cv_text":   "",
         # Auth — JWT mode
@@ -603,9 +607,12 @@ language, optimizes for your target role.
         st.session_state.uploaded_cv_bytes = uploaded.getvalue()
         st.session_state.job_description = jd.strip()
         st.session_state.certificates = []
-        st.session_state.pending_cert_results = []
+        st.session_state.classified_files = []
+        st.session_state.additional_cv_data = []
         st.session_state.cert_input_tokens = 0
         st.session_state.cert_output_tokens = 0
+        st.session_state.review_decisions = {}
+        st.session_state.review_editing = []
         st.session_state.stage = "upload_certs"
         st.rerun()
 
@@ -620,102 +627,174 @@ def render_upload_certs():
     col_left, col_right = st.columns([2, 1], gap="large")
 
     with col_left:
-        st.markdown("### 📜 Add Certificates (Optional)")
+        st.markdown("### 📜 Add Certificates or Extra CV Pages (Optional)")
         st.caption(
-            "Upload certificate files — Claude will extract the details automatically. "
-            "Certificates are added to your CV before AI optimisation so they appear in all outputs."
+            "Upload any certificates or additional CV files. "
+            "Claude will detect what each file is — certificates are added to your CV, "
+            "extra CV pages are merged in automatically."
         )
 
-        cert_files = st.file_uploader(
-            "Certificate files (PDF, JPG, PNG)",
-            type=["pdf", "jpg", "jpeg", "png"],
+        uploaded_files = st.file_uploader(
+            "Files (PDF, JPG, PNG, DOCX, TXT)",
+            type=["pdf", "jpg", "jpeg", "png", "docx", "txt"],
             accept_multiple_files=True,
             key="cert_uploader",
             label_visibility="collapsed",
         )
 
-        if cert_files:
-            if st.button("🔍 Extract Certificate Details", type="secondary",
+        if uploaded_files:
+            if st.button("🔍 Classify & Extract", type="secondary",
                          use_container_width=True):
                 if not _check_online():
-                    st.warning("Certificate extraction requires internet. "
-                               "You can still proceed — add certs manually below.")
+                    st.warning("File classification requires internet. "
+                               "You can still proceed without adding files.")
                 else:
-                    results = []
+                    classified = []
                     total_in, total_out = 0, 0
-                    with st.spinner(f"Extracting details from {len(cert_files)} file(s)…"):
+                    with st.spinner(f"Classifying {len(uploaded_files)} file(s)…"):
                         try:
                             from revizor_frank.core import cert_extractor
-                            for cf in cert_files:
-                                cert, in_tok, out_tok = cert_extractor.extract_certificate(
-                                    cf.getvalue(), cf.name
+                            for uf in uploaded_files:
+                                file_bytes = uf.getvalue()
+                                doc_type, dt_in, dt_out = cert_extractor.detect_document_type(
+                                    file_bytes, uf.name
                                 )
-                                cert["_filename"] = cf.name
-                                results.append(cert)
-                                total_in += in_tok
-                                total_out += out_tok
+                                total_in += dt_in
+                                total_out += dt_out
+                                if doc_type == "CV":
+                                    cv_data, cv_in, cv_out = cert_extractor.extract_cv_data_from_file(
+                                        file_bytes, uf.name
+                                    )
+                                    total_in += cv_in
+                                    total_out += cv_out
+                                    classified.append({
+                                        "filename": uf.name,
+                                        "type": "CV",
+                                        "data": cv_data,
+                                    })
+                                else:
+                                    cert, c_in, c_out = cert_extractor.extract_certificate(
+                                        file_bytes, uf.name
+                                    )
+                                    cert["_filename"] = uf.name
+                                    total_in += c_in
+                                    total_out += c_out
+                                    classified.append({
+                                        "filename": uf.name,
+                                        "type": "CERTIFICATE",
+                                        "data": cert,
+                                    })
                         except Exception as e:
-                            st.error(f"Extraction failed: {e}")
-                    if results:
-                        st.session_state.pending_cert_results = results
-                        st.session_state.cert_input_tokens += total_in
-                        st.session_state.cert_output_tokens += total_out
+                            st.error(f"Classification failed: {e}")
+                    if classified:
+                        st.session_state.classified_files = classified
+                        st.session_state.cert_input_tokens  = (
+                            st.session_state.get("cert_input_tokens", 0) + total_in
+                        )
+                        st.session_state.cert_output_tokens = (
+                            st.session_state.get("cert_output_tokens", 0) + total_out
+                        )
                         st.rerun()
 
-        # ── Editable form for extracted certs ─────────────────────────────────
-        pending = st.session_state.get("pending_cert_results", [])
-        if pending:
+        # ── Review classified results ──────────────────────────────────────────
+        classified = st.session_state.get("classified_files", [])
+        if classified:
             st.divider()
-            st.markdown("#### ✏️ Review & Edit Extracted Details")
-            st.caption("Correct any errors, then click **Confirm** to add to your CV.")
+            st.markdown("#### ✏️ Review Detected Files")
 
-            with st.form("cert_confirm_form"):
-                edited = []
-                for i, cert in enumerate(pending):
-                    label = cert.get("name") or cert.get("_filename", f"Certificate {i + 1}")
-                    st.markdown(f"**📜 {label}**")
-                    col_a, col_b = st.columns(2)
-                    with col_a:
-                        c_name   = st.text_input("Certificate Name",    value=cert.get("name", ""),          key=f"cname_{i}")
-                        c_issuer = st.text_input("Issuing Organisation", value=cert.get("issuer", ""),        key=f"ciss_{i}")
-                    with col_b:
-                        c_date   = st.text_input("Issue Date",           value=cert.get("date", ""),          key=f"cdate_{i}")
-                        c_id     = st.text_input("Credential ID (opt.)", value=cert.get("credential_id", ""), key=f"ccid_{i}")
-                    edited.append({"name": c_name, "issuer": c_issuer,
-                                   "date": c_date,  "credential_id": c_id})
-                    if i < len(pending) - 1:
-                        st.divider()
+            # Show CV summaries (read-only)
+            cv_items   = [c for c in classified if c["type"] == "CV"]
+            cert_items = [c for c in classified if c["type"] == "CERTIFICATE"]
 
-                col_ok, col_skip_certs = st.columns(2)
-                with col_ok:
-                    confirmed = st.form_submit_button(
-                        "✅ Confirm & Optimize CV", type="primary", use_container_width=True
-                    )
-                with col_skip_certs:
-                    skipped_certs = st.form_submit_button(
-                        "Skip Certificates", use_container_width=True
-                    )
+            for item in cv_items:
+                st.success(f"📄 CV/Resume detected: **{item['filename']}**")
+                cv = item["data"]
+                name = cv.get("name") or ""
+                exp_count  = len(cv.get("experience", []))
+                edu_count  = len(cv.get("education", []))
+                skill_cats = len(cv.get("skills", {}).get("categories", []))
+                st.caption(
+                    f"{name + ' · ' if name else ''}"
+                    f"{exp_count} experience entr{'y' if exp_count == 1 else 'ies'}, "
+                    f"{edu_count} education entr{'y' if edu_count == 1 else 'ies'}, "
+                    f"{skill_cats} skill categor{'y' if skill_cats == 1 else 'ies'} — "
+                    "will be merged into your CV automatically."
+                )
 
-            if confirmed:
-                st.session_state.certificates = [
-                    {"name": c["name"], "issuer": c["issuer"],
-                     "date": c["date"],  "credential_id": c.get("credential_id", "")}
-                    for c in edited if c.get("name")
-                ]
-                st.session_state.pending_cert_results = []
-                st.session_state.stage = "processing"
-                st.rerun()
-            elif skipped_certs:
-                st.session_state.pending_cert_results = []
-                st.session_state.stage = "processing"
-                st.rerun()
+            # Editable form for certificates
+            if cert_items:
+                st.markdown("**Edit certificate details if needed:**")
+                with st.form("cert_confirm_form"):
+                    edited_certs = []
+                    for i, item in enumerate(cert_items):
+                        cert = item["data"]
+                        label = cert.get("name") or item["filename"]
+                        st.markdown(f"**📜 {label}** — `{item['filename']}`")
+                        col_a, col_b = st.columns(2)
+                        with col_a:
+                            c_name   = st.text_input("Certificate Name",    value=cert.get("name", ""),          key=f"cname_{i}")
+                            c_issuer = st.text_input("Issuing Organisation", value=cert.get("issuer", ""),        key=f"ciss_{i}")
+                        with col_b:
+                            c_date   = st.text_input("Issue Date",           value=cert.get("date", ""),          key=f"cdate_{i}")
+                            c_id     = st.text_input("Credential ID (opt.)", value=cert.get("credential_id", ""), key=f"ccid_{i}")
+                        edited_certs.append({"name": c_name, "issuer": c_issuer,
+                                             "date": c_date, "credential_id": c_id})
+                        if i < len(cert_items) - 1:
+                            st.divider()
 
-        # ── Skip entirely ──────────────────────────────────────────────────────
-        if not pending:
+                    col_ok, col_skip_btn = st.columns(2)
+                    with col_ok:
+                        confirmed = st.form_submit_button(
+                            "✅ Confirm & Optimize CV", type="primary", use_container_width=True
+                        )
+                    with col_skip_btn:
+                        skipped_form = st.form_submit_button(
+                            "Skip & Optimize CV", use_container_width=True
+                        )
+
+                if confirmed:
+                    st.session_state.certificates = [
+                        {"name": c["name"], "issuer": c["issuer"],
+                         "date": c["date"],  "credential_id": c.get("credential_id", "")}
+                        for c in edited_certs if c.get("name")
+                    ]
+                    st.session_state.additional_cv_data = [
+                        item["data"] for item in cv_items
+                    ]
+                    st.session_state.classified_files = []
+                    st.session_state.stage = "processing"
+                    st.rerun()
+                elif skipped_form:
+                    st.session_state.additional_cv_data = [
+                        item["data"] for item in cv_items
+                    ]
+                    st.session_state.classified_files = []
+                    st.session_state.stage = "processing"
+                    st.rerun()
+            else:
+                # Only CV files detected — no cert form needed
+                st.markdown("<br>", unsafe_allow_html=True)
+                col_proc, col_back = st.columns([2, 1])
+                with col_proc:
+                    if st.button("✅ Confirm & Optimize CV", type="primary",
+                                 use_container_width=True):
+                        st.session_state.additional_cv_data = [
+                            item["data"] for item in cv_items
+                        ]
+                        st.session_state.classified_files = []
+                        st.session_state.stage = "processing"
+                        st.rerun()
+                with col_back:
+                    if st.button("← Back to Upload", use_container_width=True):
+                        st.session_state.stage = "upload"
+                        st.rerun()
+
+        # ── Skip entirely (no files classified yet) ────────────────────────────
+        if not classified:
             st.markdown("<br>", unsafe_allow_html=True)
             col_proc, col_back = st.columns([2, 1])
             with col_proc:
-                if st.button("⏭️ No certificates — Proceed to Optimization",
+                if st.button("⏭️ No files to add — Proceed to Optimization",
                              type="primary", use_container_width=True):
                     st.session_state.stage = "processing"
                     st.rerun()
@@ -725,19 +804,22 @@ def render_upload_certs():
                     st.rerun()
 
     with col_right:
-        st.markdown("### Why add certificates?")
+        st.markdown("### What can I upload here?")
         st.markdown("""
-Adding certificates helps Claude write a stronger CV:
+**Certificates & Qualifications**
+Add any credentials you've earned — Claude extracts the name, issuer, and date automatically.
 
+**Additional CV Pages**
+Upload a second CV (different format, older version, LinkedIn export) — Claude merges the unique content into your main CV.
+
+**Why bother?**
 - **ATS scoring** — certifications are a key scoring factor
-- **All sections** — appear in PDF, DOCX, and LinkedIn outputs
-- **Context** — Claude references them when rewriting your summary
+- **Complete picture** — nothing gets left behind
+- **All outputs** — merged content appears in PDF, DOCX, and LinkedIn exports
 
-**Supported formats:**
-- PDF certificates
-- JPG / PNG images of certificates
+**Supported formats:** PDF · JPG · PNG · DOCX · TXT
 
-Certificate extraction is a separate, lightweight API call — it does not inflate your main optimisation cost.
+File detection is a lightweight call — it does not inflate your main optimisation cost.
         """)
 
 
@@ -799,6 +881,13 @@ def _run_pipeline():
                         "issuer": cert.get("issuer", ""),
                         "date": cert.get("date", ""),
                     })
+        # Merge any additional CV files uploaded in the cert stage
+        additional_cv_data = st.session_state.get("additional_cv_data", [])
+        if additional_cv_data:
+            from revizor_frank.core.cert_extractor import merge_cv_data
+            for extra in additional_cv_data:
+                parsed = merge_cv_data(parsed, extra)
+
         st.session_state.parsed_cv = parsed
         progress.progress(20, text=S["parsing_cv"])
 
@@ -911,7 +1000,13 @@ def _run_pipeline():
         time.sleep(0.5)
         status.empty()
         progress.empty()
-        st.session_state.stage = "results"
+
+        # Route to review stage when AI optimisation ran, otherwise go straight to results
+        if st.session_state.get("ai_cv_general"):
+            _init_review_state()
+            st.session_state.stage = "review_changes"
+        else:
+            st.session_state.stage = "results"
         st.rerun()
 
     except Exception as e:
@@ -919,6 +1014,250 @@ def _run_pipeline():
         status.empty()
         st.session_state.stage = "upload"
         st.error(f"{S['err_parse_failed']} — {e}")
+
+
+# ── Review stage helpers ──────────────────────────────────────────────────────
+
+def _diff_html(old: str, new: str) -> str:
+    """Return HTML string with word-level diff: additions green, deletions red strikethrough."""
+    import difflib
+    old_words = old.split()
+    new_words = new.split()
+    matcher = difflib.SequenceMatcher(None, old_words, new_words)
+    parts = []
+    _ADD = 'background:#d4edda;color:#155724;border-radius:3px;padding:0 3px'
+    _DEL = 'background:#f8d7da;color:#721c24;text-decoration:line-through;border-radius:3px;padding:0 3px'
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            parts.append(" ".join(old_words[i1:i2]))
+        elif tag == "insert":
+            parts.append(f'<span style="{_ADD}">{" ".join(new_words[j1:j2])}</span>')
+        elif tag == "delete":
+            parts.append(f'<span style="{_DEL}">{" ".join(old_words[i1:i2])}</span>')
+        elif tag == "replace":
+            parts.append(f'<span style="{_DEL}">{" ".join(old_words[i1:i2])}</span> '
+                         f'<span style="{_ADD}">{" ".join(new_words[j1:j2])}</span>')
+    return " ".join(parts)
+
+
+def _cv_section_text(cv: dict, section: str, idx: int = -1) -> str:
+    """Convert one CV section (or entry at idx) to a plain-text string for display/editing."""
+    if section == "summary":
+        return cv.get("summary", "")
+
+    if section == "experience":
+        entries = cv.get("experience", [])
+        if idx < 0 or idx >= len(entries):
+            return ""
+        e = entries[idx]
+        lines = [f"{e.get('title', '')} @ {e.get('company', '')}"]
+        dates = f"{e.get('start_date', '')} – {e.get('end_date', 'Present')}"
+        if dates.strip(" –"):
+            lines.append(dates)
+        if e.get("location"):
+            lines.append(e["location"])
+        for b in e.get("bullets", []):
+            lines.append(f"• {b}")
+        return "\n".join(lines)
+
+    if section == "education":
+        entries = cv.get("education", [])
+        if idx < 0 or idx >= len(entries):
+            return ""
+        e = entries[idx]
+        lines = [l for l in [e.get("degree", ""), e.get("institution", ""),
+                              e.get("year", ""), e.get("honors", ""), e.get("gpa", "")] if l]
+        return "\n".join(lines)
+
+    if section == "skills":
+        return "\n".join(
+            f"{c['name']}: {', '.join(c.get('items', []))}"
+            for c in cv.get("skills", {}).get("categories", []) if c.get("items")
+        )
+
+    if section == "certifications":
+        return "\n".join(
+            f"• {c.get('name', '')} — {c.get('issuer', '')} ({c.get('date', '')})"
+            for c in cv.get("certifications", []) if c.get("name")
+        )
+
+    if section == "languages":
+        return ", ".join(cv.get("languages", []))
+
+    return ""
+
+
+def _init_review_state():
+    """Populate review_decisions from offline_cv (original) vs ai_cv_general (revised)."""
+    original = st.session_state.offline_cv or {}
+    revised  = st.session_state.ai_cv_general or st.session_state.offline_cv or {}
+
+    decisions: dict = {}
+
+    def _add(key, label, section, idx=-1):
+        orig = _cv_section_text(original, section, idx)
+        rev  = _cv_section_text(revised,  section, idx)
+        if rev:  # only add sections that actually have content
+            decisions[key] = {
+                "label": label, "original": orig, "revised": rev,
+                "status": "pending", "text": rev,
+            }
+
+    _add("summary", "Summary", "summary")
+
+    for i, exp in enumerate(revised.get("experience", [])):
+        label = f"Experience: {exp.get('title', '')} @ {exp.get('company', '')}"
+        _add(f"exp_{i}", label, "experience", i)
+
+    for i, edu in enumerate(revised.get("education", [])):
+        label = f"Education: {edu.get('degree', '')} — {edu.get('institution', '')}"
+        _add(f"edu_{i}", label, "education", i)
+
+    _add("skills",         "Skills",         "skills")
+    _add("certifications", "Certifications", "certifications")
+    _add("languages",      "Languages",      "languages")
+
+    st.session_state.review_decisions = decisions
+    st.session_state.review_editing   = []
+
+
+def _apply_review_decisions() -> dict:
+    """Build final CV dict: start from ai_cv_general, apply any edited sections."""
+    import copy
+    from revizor_frank.core.cv_parser import (
+        _parse_experience, _parse_education, _parse_skills,
+        _parse_certifications, _parse_languages,
+    )
+
+    final = copy.deepcopy(st.session_state.ai_cv_general or st.session_state.offline_cv or {})
+    for key, dec in st.session_state.get("review_decisions", {}).items():
+        if dec["status"] != "edited":
+            continue
+        text = dec["text"]
+        if key == "summary":
+            final["summary"] = text
+        elif key.startswith("exp_"):
+            idx = int(key.split("_")[1])
+            parsed = _parse_experience(text)
+            if parsed and idx < len(final.get("experience", [])):
+                final["experience"][idx] = parsed[0]
+        elif key.startswith("edu_"):
+            idx = int(key.split("_")[1])
+            parsed = _parse_education(text)
+            if parsed and idx < len(final.get("education", [])):
+                final["education"][idx] = parsed[0]
+        elif key == "skills":
+            final["skills"] = _parse_skills(text)
+        elif key == "certifications":
+            final["certifications"] = _parse_certifications(text)
+        elif key == "languages":
+            final["languages"] = _parse_languages(text)
+    return final
+
+
+def render_review_changes():
+    """Side-by-side tracked-changes review before final results."""
+    if not st.session_state.get("review_decisions"):
+        _init_review_state()
+
+    decisions: dict = st.session_state.review_decisions
+    editing: list   = st.session_state.get("review_editing", [])
+    total    = len(decisions)
+    approved = sum(1 for d in decisions.values() if d["status"] in ("approved", "edited"))
+    all_done = (approved == total)
+
+    st.markdown(f"## 🔍 Review AI Changes — {approved}/{total} sections reviewed")
+    st.caption(
+        f"**{st.session_state.filename}**  ·  "
+        "Approve each section or edit before finalising. "
+        "Green = added, ~~red~~ = removed."
+    )
+
+    top_left, top_mid, top_right = st.columns([2, 3, 2])
+    with top_left:
+        if st.button("✅ Approve All Changes", use_container_width=True):
+            for dec in decisions.values():
+                dec["status"] = "approved"
+            st.session_state.review_editing = []
+            st.session_state.review_decisions = decisions
+            st.rerun()
+    with top_right:
+        if st.button("Finalise CV →", type="primary", use_container_width=True,
+                     disabled=not all_done):
+            st.session_state.ai_cv_general = _apply_review_decisions()
+            st.session_state.stage = "results"
+            st.rerun()
+
+    if not all_done:
+        st.info(f"{total - approved} section(s) pending — approve or edit each one, "
+                "or click **Approve All Changes** to accept everything.")
+    st.divider()
+
+    for key, dec in decisions.items():
+        status = dec["status"]
+        icon = "✅" if status == "approved" else "✏️" if status == "edited" else "⏳"
+        label = dec["label"]
+
+        with st.expander(f"{icon} {label}", expanded=(status == "pending")):
+            if key in editing:
+                # ── Edit mode ────────────────────────────────────────────────
+                new_text = st.text_area(
+                    "Edit the revised text:",
+                    value=dec.get("text", dec["revised"]),
+                    height=220,
+                    key=f"ta_{key}",
+                )
+                c_save, c_cancel = st.columns(2)
+                with c_save:
+                    if st.button("💾 Save & Approve", key=f"save_{key}",
+                                 type="primary", use_container_width=True):
+                        dec["text"]   = new_text
+                        dec["status"] = "edited"
+                        editing.remove(key)
+                        st.session_state.review_editing   = editing
+                        st.session_state.review_decisions = decisions
+                        st.rerun()
+                with c_cancel:
+                    if st.button("Cancel", key=f"cancel_{key}", use_container_width=True):
+                        editing.remove(key)
+                        st.session_state.review_editing = editing
+                        st.rerun()
+            else:
+                # ── Diff view ────────────────────────────────────────────────
+                c_orig, c_rev = st.columns(2)
+                with c_orig:
+                    st.caption("**Original**")
+                    st.markdown(
+                        f'<div style="background:#fff8f8;border:1px solid #e9ecef;'
+                        f'border-radius:6px;padding:0.75rem;font-size:0.85rem;'
+                        f'white-space:pre-wrap;min-height:60px">'
+                        f'{dec["original"] or "<em>(empty)</em>"}</div>',
+                        unsafe_allow_html=True,
+                    )
+                with c_rev:
+                    st.caption("**AI Revised**")
+                    diff = _diff_html(dec["original"], dec.get("text", dec["revised"]))
+                    st.markdown(
+                        f'<div style="background:#f8fff8;border:1px solid #e9ecef;'
+                        f'border-radius:6px;padding:0.75rem;font-size:0.85rem;'
+                        f'white-space:pre-wrap;min-height:60px">'
+                        f'{diff or "<em>(empty)</em>"}</div>',
+                        unsafe_allow_html=True,
+                    )
+
+                c_app, c_edit, _ = st.columns([1, 1, 3])
+                with c_app:
+                    if st.button("✅ Approve", key=f"app_{key}", use_container_width=True,
+                                 type="primary" if status == "pending" else "secondary"):
+                        dec["status"] = "approved"
+                        st.session_state.review_decisions = decisions
+                        st.rerun()
+                with c_edit:
+                    if st.button("✏️ Edit", key=f"edit_{key}", use_container_width=True):
+                        if key not in editing:
+                            editing.append(key)
+                        st.session_state.review_editing = editing
+                        st.rerun()
 
 
 # ── Results stage ─────────────────────────────────────────────────────────────
@@ -1515,6 +1854,8 @@ def main():
         render_upload_certs()
     elif stage == "processing":
         _run_pipeline()
+    elif stage == "review_changes":
+        render_review_changes()
     elif stage == "results":
         render_results()
     elif stage == "admin":

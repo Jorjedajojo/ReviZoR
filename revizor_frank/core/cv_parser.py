@@ -115,8 +115,10 @@ def extract_text_from_pdf(file: BinaryIO, api_key: str = "") -> tuple[str, int, 
                         "text": (
                             "Extract all text content from this CV/resume exactly as it appears. "
                             "Include every section, every line, every detail — contact information, "
-                            "summary, work experience, education, skills, certifications, languages, "
-                            "and any other sections present. Output plain text only, no markdown."
+                            "summary, work experience, education, skills, certifications, and especially "
+                            "the Languages section: list every language with its proficiency level exactly "
+                            "as written (e.g. Arabic – Native, English – Fluent, German – Intermediate). "
+                            "Include any other sections present. Output plain text only, no markdown."
                         ),
                     },
                 ],
@@ -214,7 +216,9 @@ _SECTION_PATTERNS: list[tuple[str, re.Pattern]] = [
         r"courses?|training|professional\s+development|"
         r"certificates?\s+[&and]+\s+licenses?)\s*[:\-–_─]*\s*$", re.I | re.M)),
     ("languages", re.compile(
-        r"^\s*(languages?|language\s+skills|linguistic\s+skills)\s*[:\-–_─]*\s*$",
+        r"^\s*(languages?|language\s+skills|linguistic\s+skills|"
+        r"languages?\s+[&and]+\s+communication|spoken\s+languages?|"
+        r"language\s+proficiencies|language\s+abilities|لغات)\s*[:\-–_─]*\s*$",
         re.I | re.M)),
     ("projects", re.compile(
         r"^\s*(projects?|personal\s+projects?|key\s+projects?|"
@@ -448,6 +452,22 @@ def _parse_certifications(text: str) -> list[dict]:
 
 # ── Languages parser ──────────────────────────────────────────────────────────
 
+# Common language names for fallback scan (lowercase)
+_KNOWN_LANGUAGES = [
+    "arabic", "english", "french", "german", "spanish", "italian", "portuguese",
+    "chinese", "mandarin", "japanese", "korean", "russian", "dutch", "turkish",
+    "persian", "farsi", "hindi", "urdu", "swahili", "polish", "swedish", "norwegian",
+    "danish", "greek", "hebrew", "thai", "vietnamese", "indonesian", "malay",
+    "romanian", "hungarian", "czech", "slovak", "bulgarian", "croatian", "serbian",
+    "ukrainian", "catalan", "finnish", "latvian", "lithuanian", "estonian",
+]
+_PROFICIENCY_WORDS = [
+    "native", "fluent", "intermediate", "advanced", "basic", "beginner",
+    "mother tongue", "excellent", "very good", "good", "fair", "conversational",
+    "professional", "business", "working", "elementary", "limited", "bilingual",
+]
+
+
 def _parse_languages(text: str) -> list[str]:
     if not text:
         return []
@@ -457,6 +477,39 @@ def _parse_languages(text: str) -> list[str]:
         if item:
             langs.append(item)
     return langs
+
+
+def _fallback_language_scan(raw_text: str) -> list[str]:
+    """Scan raw CV text for language names when no language section was found."""
+    found: list[str] = []
+    seen: set[str] = set()
+    text_lower = raw_text.lower()
+
+    for lang in _KNOWN_LANGUAGES:
+        if lang not in text_lower:
+            continue
+        # Find the occurrence and grab surrounding context for proficiency
+        pattern = rf"\b{re.escape(lang)}\b([^\n]{{0,40}})"
+        for m in re.finditer(pattern, raw_text, re.I):
+            context = m.group(0).strip()
+            norm = lang.lower()
+            if norm in seen:
+                break
+            seen.add(norm)
+            # Look for proficiency word in context
+            prof = next(
+                (p for p in _PROFICIENCY_WORDS if p in context.lower()),
+                None,
+            )
+            if prof:
+                # Capitalise sensibly
+                entry = f"{lang.title()} ({prof.title()})"
+            else:
+                entry = lang.title()
+            found.append(entry)
+            break  # only capture each language once
+
+    return found
 
 
 # ── Projects parser ───────────────────────────────────────────────────────────
@@ -505,4 +558,7 @@ def parse_cv(file: BinaryIO, filename: str, api_key: str = "") -> tuple[dict, in
         "projects":       _parse_projects(sections.get("projects", "")),
         "raw_text":       raw_text,
     }
+    # Fallback: if no language section was detected, scan raw text for language names
+    if not cv_data["languages"] and raw_text:
+        cv_data["languages"] = _fallback_language_scan(raw_text)
     return cv_data, in_tok, out_tok
