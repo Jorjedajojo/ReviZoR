@@ -803,7 +803,7 @@ def _run_pipeline():
         progress.progress(20, text=S["parsing_cv"])
 
         # 2. Create DB session
-        session_id = db.create_session(uploaded_file.name, parsed.get("raw_text", ""))
+        session_id = db.create_session(filename, parsed.get("raw_text", ""))
         st.session_state.session_id = session_id
         db.update_session(session_id, parsed_data=parsed,
                           job_description=st.session_state.job_description,
