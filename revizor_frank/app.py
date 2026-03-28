@@ -26,7 +26,9 @@ import streamlit as st
 # Pushes st.secrets into os.environ so the rest of the app is environment-agnostic.
 try:
     for _k in ("ANTHROPIC_API_KEY", "SECRET_KEY", "API_BASE_URL",
-               "APP_USERNAME", "APP_PASSWORD", "SESSION_TIMEOUT_HOURS"):
+               "APP_USERNAME", "APP_PASSWORD", "SESSION_TIMEOUT_HOURS",
+               "ADMIN_USERNAME", "ADMIN_PASSWORD", "USD_TO_EGP_RATE",
+               "SUPABASE_URL", "SUPABASE_ANON_KEY"):
         if _k in st.secrets and not os.environ.get(_k):
             os.environ[_k] = str(st.secrets[_k])
 except Exception:
@@ -48,7 +50,16 @@ from revizor_frank.i18n import STRINGS as S
 API_BASE_URL: str        = os.getenv("API_BASE_URL", "").rstrip("/")
 _APP_USERNAME: str       = os.getenv("APP_USERNAME", "")
 _APP_PASSWORD: str       = os.getenv("APP_PASSWORD", "")
+_ADMIN_USERNAME: str     = os.getenv("ADMIN_USERNAME", "")
+_ADMIN_PASSWORD: str     = os.getenv("ADMIN_PASSWORD", "")
 SESSION_TIMEOUT_HOURS: int = int(os.getenv("SESSION_TIMEOUT_HOURS", "8"))
+USD_TO_EGP_RATE: float   = float(os.getenv("USD_TO_EGP_RATE", "50"))
+
+# Pricing
+TIER_PRICES = {
+    "cv_only":     7.50,
+    "cv_linkedin": 10.00,
+}
 
 # Auth mode resolution (priority order)
 SIMPLE_AUTH: bool = bool(_APP_USERNAME and _APP_PASSWORD) and not API_BASE_URL
@@ -56,14 +67,26 @@ JWT_AUTH: bool    = bool(API_BASE_URL)
 AUTH_ENABLED: bool = JWT_AUTH  # kept for JWT path compatibility
 
 
-def _check_credentials(username: str, password: str) -> bool:
-    """Constant-time credential check to prevent timing attacks."""
-    u_ok = hmac.compare_digest(username.strip().lower(), _APP_USERNAME.strip().lower())
-    p_ok = hmac.compare_digest(
-        hashlib.sha256(password.encode()).hexdigest(),
-        hashlib.sha256(_APP_PASSWORD.encode()).hexdigest(),
-    )
-    return u_ok and p_ok
+def _check_credentials(username: str, password: str) -> str | None:
+    """Constant-time credential check. Returns 'admin', 'user', or None."""
+    u = username.strip().lower()
+    p_hash = hashlib.sha256(password.encode()).hexdigest()
+
+    # Check admin credentials first (admin also has user access)
+    if _ADMIN_USERNAME and _ADMIN_PASSWORD:
+        a_u_ok = hmac.compare_digest(u, _ADMIN_USERNAME.strip().lower())
+        a_p_ok = hmac.compare_digest(p_hash, hashlib.sha256(_ADMIN_PASSWORD.encode()).hexdigest())
+        if a_u_ok and a_p_ok:
+            return "admin"
+
+    # Check regular user credentials
+    if _APP_USERNAME and _APP_PASSWORD:
+        u_ok = hmac.compare_digest(u, _APP_USERNAME.strip().lower())
+        p_ok = hmac.compare_digest(p_hash, hashlib.sha256(_APP_PASSWORD.encode()).hexdigest())
+        if u_ok and p_ok:
+            return "user"
+
+    return None
 
 
 def _simple_auth_valid() -> bool:
@@ -102,10 +125,12 @@ def render_simple_login():
             submitted = st.form_submit_button("Sign In", use_container_width=True, type="primary")
 
         if submitted:
-            if _check_credentials(username, password):
+            role = _check_credentials(username, password)
+            if role:
                 st.session_state.simple_auth_ok   = True
                 st.session_state.simple_auth_time = datetime.now(timezone.utc)
                 st.session_state.simple_auth_user = username.strip().lower()
+                st.session_state.user_role        = role
                 st.rerun()
             else:
                 # Small delay to further slow brute-force attempts
@@ -173,7 +198,7 @@ st.markdown("""
 def _init_state():
     defaults = {
         # CV pipeline
-        "stage":            "upload",      # upload | processing | results
+        "stage":            "select_service",  # select_service | upload | processing | results
         "session_id":       None,
         "parsed_cv":        None,
         "offline_cv":       None,
@@ -186,6 +211,13 @@ def _init_state():
         "filename":         "",
         "online":           False,
         "error":            None,
+        # Service & pricing
+        "service_tier":     "",     # "cv_only" | "cv_linkedin"
+        "coupon_code":      "",
+        "total_input_tokens":  0,
+        "total_output_tokens": 0,
+        # Inline editor
+        "edited_cv_text":   "",
         # Auth — JWT mode
         "auth_token":       None,
         "refresh_token":    None,
@@ -196,6 +228,7 @@ def _init_state():
         "simple_auth_ok":   False,
         "simple_auth_time": None,
         "simple_auth_user": None,
+        "user_role":        "user",  # "user" | "admin"
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -413,19 +446,86 @@ def render_sidebar():
                 st.rerun()
 
         st.divider()
-        if st.session_state.stage == "results":
+        if st.session_state.stage in ("upload", "results"):
             if st.button("🔄 Start Over", use_container_width=True):
-                # Preserve auth state
-                auth_keys = {k: st.session_state[k] for k in
-                             ("auth_token", "refresh_token", "auth_user", "auth_expires_at", "auth_error")
-                             if k in st.session_state}
+                # Preserve auth + role state
+                keep = ("auth_token", "refresh_token", "auth_user", "auth_expires_at", "auth_error",
+                        "simple_auth_ok", "simple_auth_time", "simple_auth_user", "user_role")
+                auth_keys = {k: st.session_state[k] for k in keep if k in st.session_state}
                 for key in list(st.session_state.keys()):
                     del st.session_state[key]
                 st.session_state.update(auth_keys)
                 st.rerun()
 
+        # Admin dashboard button (only for admin role)
+        if st.session_state.get("user_role") == "admin":
+            st.divider()
+            if st.button("🛠 Admin Dashboard", use_container_width=True):
+                st.session_state.stage = "admin"
+                st.rerun()
+
         st.divider()
         st.caption("ReviZoR FranK — Part of the ReviZoR HR Platform")
+
+
+# ── Service selection stage ───────────────────────────────────────────────────
+
+def render_select_service():
+    st.markdown(f"# 📄 {APP_NAME}")
+    st.markdown("*Choose your service before uploading your CV.*")
+    st.divider()
+
+    col_l, col_m, col_r = st.columns([1, 3, 1])
+    with col_m:
+        st.markdown("## Select Your Service")
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        tier_col1, tier_col2 = st.columns(2, gap="large")
+
+        with tier_col1:
+            st.markdown("""
+<div style="border:2px solid #0d6efd;border-radius:12px;padding:1.5rem;text-align:center">
+<h3 style="margin:0">📄 CV Revision</h3>
+<p style="font-size:2rem;font-weight:800;color:#0d6efd;margin:0.5rem 0">$7.50</p>
+<ul style="text-align:left;margin-top:1rem">
+<li>ATS score &amp; issue report</li>
+<li>AI-optimized CV rewrite</li>
+<li>JD-tailored version (if JD provided)</li>
+<li>Plain text (.txt) output</li>
+</ul>
+</div>""", unsafe_allow_html=True)
+            if st.button("Select CV Revision", key="tier_cv_only",
+                         use_container_width=True, type="primary"):
+                st.session_state.service_tier = "cv_only"
+                st.session_state.stage = "upload"
+                st.rerun()
+
+        with tier_col2:
+            st.markdown("""
+<div style="border:2px solid #198754;border-radius:12px;padding:1.5rem;text-align:center">
+<h3 style="margin:0">📄 + 🔗 CV + LinkedIn</h3>
+<p style="font-size:2rem;font-weight:800;color:#198754;margin:0.5rem 0">$10.00</p>
+<ul style="text-align:left;margin-top:1rem">
+<li>Everything in CV Revision</li>
+<li>Full LinkedIn profile generator</li>
+<li>All 6 download formats</li>
+<li>Inline CV editor</li>
+</ul>
+</div>""", unsafe_allow_html=True)
+            if st.button("Select CV + LinkedIn", key="tier_cv_linkedin",
+                         use_container_width=True, type="primary"):
+                st.session_state.service_tier = "cv_linkedin"
+                st.session_state.stage = "upload"
+                st.rerun()
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.divider()
+        st.markdown("**Have a coupon code?**")
+        coupon = st.text_input("Coupon Code (optional)", placeholder="Enter code",
+                               value=st.session_state.get("coupon_code", ""),
+                               key="coupon_input")
+        if coupon != st.session_state.get("coupon_code", ""):
+            st.session_state.coupon_code = coupon.strip()
 
 
 # ── Upload stage ──────────────────────────────────────────────────────────────
@@ -506,8 +606,13 @@ def _run_pipeline(uploaded_file):
     from revizor_frank.core import linkedin_gen
     from revizor_frank.storage import database as db
 
+    tier = st.session_state.get("service_tier", "cv_linkedin")
+    include_linkedin = (tier != "cv_only")
+
     st.session_state.stage = "processing"
     st.session_state.error = None
+    st.session_state.total_input_tokens = 0
+    st.session_state.total_output_tokens = 0
 
     progress = st.progress(0, text="Starting...")
     status = st.empty()
@@ -543,11 +648,14 @@ def _run_pipeline(uploaded_file):
 
         # 5. Claude AI optimization (online only)
         online = _check_online()
+        total_in, total_out = 0, 0
+
         if online:
             try:
                 from revizor_frank.core import cv_optimizer
                 status.info(f"🤖 {S['optimizing_ai']} (General ATS)...")
-                general_cv = cv_optimizer.optimize_general(offline_cv)
+                general_cv, in_tok, out_tok = cv_optimizer.optimize_general(offline_cv)
+                total_in += in_tok; total_out += out_tok
                 st.session_state.ai_cv_general = general_cv
                 db.update_session(session_id, ai_cv_general=general_cv)
                 progress.progress(75, text="General ATS optimization complete")
@@ -555,34 +663,69 @@ def _run_pipeline(uploaded_file):
                 jd_cv = None
                 if st.session_state.job_description:
                     status.info(f"🤖 {S['optimizing_ai']} (JD-Tailored)...")
-                    jd_cv = cv_optimizer.optimize_jd_tailored(
+                    jd_cv, in_tok, out_tok = cv_optimizer.optimize_jd_tailored(
                         parsed, st.session_state.job_description, general_cv
                     )
+                    total_in += in_tok; total_out += out_tok
                     st.session_state.ai_cv_jd = jd_cv
                     db.update_session(session_id, ai_cv_jd=jd_cv)
                 progress.progress(85, text="AI optimization complete")
 
-                # LinkedIn via Claude
-                status.info(f"🤖 {S['generating_linkedin']}...")
-                linkedin = cv_optimizer.generate_linkedin(
-                    parsed, general_cv, st.session_state.job_description
-                )
-                st.session_state.linkedin_data = linkedin
-                db.update_session(session_id, linkedin_data=linkedin,
-                                  sync_status="synced", ai_enhanced=1)
+                if include_linkedin:
+                    # LinkedIn via Claude
+                    status.info(f"🤖 {S['generating_linkedin']}...")
+                    linkedin, in_tok, out_tok = cv_optimizer.generate_linkedin(
+                        parsed, general_cv, st.session_state.job_description
+                    )
+                    total_in += in_tok; total_out += out_tok
+                    st.session_state.linkedin_data = linkedin
+                    db.update_session(session_id, linkedin_data=linkedin,
+                                      sync_status="synced", ai_enhanced=1)
+                else:
+                    db.update_session(session_id, sync_status="synced", ai_enhanced=1)
 
             except Exception as e:
                 st.session_state.error = f"{S['err_api_failed']} ({e})"
-                # Fall through to offline LinkedIn
                 online = False
 
-        if not online:
+        if not online and include_linkedin:
             # Offline LinkedIn
             status.info(f"⚙️ {S['generating_linkedin']}...")
             linkedin = linkedin_gen.generate_offline(offline_cv)
             st.session_state.linkedin_data = linkedin
             db.update_session(session_id, linkedin_data=linkedin,
                               sync_status="queued")
+
+        st.session_state.total_input_tokens = total_in
+        st.session_state.total_output_tokens = total_out
+
+        # 6. Save to Supabase
+        try:
+            from revizor_frank.storage import supabase_db
+            from revizor_frank.exporters.txt_exporter import export_txt as _export_txt_fn
+            import tempfile as _tmp
+
+            general_cv_data = st.session_state.ai_cv_general or st.session_state.offline_cv or {}
+            _txt_path = str(Path(_tmp.gettempdir()) / f"revizor_txt_{uuid.uuid4().hex}.txt")
+            _export_txt_fn(general_cv_data, _txt_path)
+            with open(_txt_path, "r", encoding="utf-8") as _f:
+                revised_text = _f.read()
+            if os.path.exists(_txt_path):
+                os.unlink(_txt_path)
+
+            supabase_db.save_cv_run(
+                session_id=str(session_id),
+                original_cv_text=parsed.get("raw_text", ""),
+                revised_cv_text=revised_text,
+                linkedin_output=st.session_state.linkedin_data,
+                tier=tier,
+                price_usd=TIER_PRICES.get(tier, 0.0),
+                coupon_code=st.session_state.get("coupon_code", ""),
+                input_tokens=total_in,
+                output_tokens=total_out,
+            )
+        except Exception:
+            pass  # Supabase save is best-effort; never break the main flow
 
         progress.progress(100, text=S["done"])
         time.sleep(0.5)
@@ -657,11 +800,16 @@ def render_results():
 
     st.divider()
 
+    tier = st.session_state.get("service_tier", "cv_linkedin")
+    include_linkedin = (tier != "cv_only")
+
     # ── Tabs ──────────────────────────────────────────────────────────────────
     tab_labels = [S["tab_general"]]
     if has_jd:
         tab_labels.append(S["tab_jd_tailored"])
-    tab_labels += [S["tab_linkedin"], "🔍 ATS Issues", S["tab_download"]]
+    if include_linkedin:
+        tab_labels.append(S["tab_linkedin"])
+    tab_labels += ["✏️ Edit CV", "🔍 ATS Issues", S["tab_download"]]
 
     tabs = st.tabs(tab_labels)
     tab_idx = 0
@@ -682,7 +830,6 @@ def render_results():
             if jd_cv:
                 st.caption("🎯 JD-Tailored AI Optimization")
                 _render_cv_preview(jd_cv)
-                # Show keyword match highlights
                 if ats.get("keyword_matches"):
                     with st.expander("✅ Keywords matched from JD"):
                         st.write(", ".join(ats["keyword_matches"]))
@@ -692,10 +839,16 @@ def render_results():
             else:
                 st.info("JD-tailored version requires internet connection. Will be generated automatically when connectivity returns.")
 
-    # LinkedIn Tab
+    # LinkedIn Tab (cv_linkedin tier only)
+    if include_linkedin:
+        with tabs[tab_idx]:
+            tab_idx += 1
+            _render_linkedin_tab()
+
+    # Edit CV Tab
     with tabs[tab_idx]:
         tab_idx += 1
-        _render_linkedin_tab()
+        _render_edit_cv_tab(include_linkedin)
 
     # ATS Issues Tab
     with tabs[tab_idx]:
@@ -795,6 +948,201 @@ def _render_linkedin_tab():
     li_section("Summary Tagline (for InMail / connection notes)", li.get("summary_tagline", ""))
 
 
+def _cv_to_text(cv: dict) -> str:
+    """Convert a CVData dict to a plain-text string using txt_exporter."""
+    import tempfile as _tmp
+    _path = str(Path(_tmp.gettempdir()) / f"revizor_edit_{uuid.uuid4().hex}.txt")
+    try:
+        from revizor_frank.exporters.txt_exporter import export_txt
+        export_txt(cv, _path)
+        with open(_path, "r", encoding="utf-8") as _f:
+            return _f.read()
+    except Exception:
+        return ""
+    finally:
+        if os.path.exists(_path):
+            os.unlink(_path)
+
+
+def _render_edit_cv_tab(include_linkedin: bool):
+    st.markdown("### ✏️ Edit Your CV Text")
+    st.caption("Edit the optimized CV below. Click **Apply edits** to save changes"
+               + (" and regenerate your LinkedIn profile." if include_linkedin else "."))
+
+    cv_source = st.session_state.ai_cv_general or st.session_state.offline_cv
+    if not cv_source:
+        st.warning("No CV available to edit yet.")
+        return
+
+    # Initialize edit buffer from CV if not already set
+    if not st.session_state.get("edited_cv_text"):
+        st.session_state.edited_cv_text = _cv_to_text(cv_source)
+
+    edited = st.text_area(
+        "CV Text",
+        value=st.session_state.edited_cv_text,
+        height=500,
+        key="cv_text_editor",
+        label_visibility="collapsed",
+    )
+
+    btn_label = "✅ Apply edits & refresh LinkedIn" if include_linkedin else "✅ Apply edits"
+    if st.button(btn_label, type="primary"):
+        st.session_state.edited_cv_text = edited
+
+        if include_linkedin and st.session_state.online and st.session_state.ai_cv_general:
+            with st.spinner("Regenerating LinkedIn profile from edited CV…"):
+                try:
+                    from revizor_frank.core import cv_optimizer
+                    # Build a minimal CVData dict from the edited text
+                    from revizor_frank.core.cv_parser import parse_cv as _parse_cv
+                    import io as _io
+                    raw_bytes = _io.BytesIO(edited.encode("utf-8"))
+                    raw_bytes.name = "edited_cv.txt"
+                    edited_parsed = _parse_cv(raw_bytes, "edited_cv.txt")
+                    linkedin, in_tok, out_tok = cv_optimizer.generate_linkedin(
+                        edited_parsed,
+                        st.session_state.ai_cv_general,
+                        st.session_state.job_description,
+                    )
+                    st.session_state.linkedin_data = linkedin
+                    st.session_state.total_input_tokens = (
+                        st.session_state.get("total_input_tokens", 0) + in_tok
+                    )
+                    st.session_state.total_output_tokens = (
+                        st.session_state.get("total_output_tokens", 0) + out_tok
+                    )
+                    st.success("LinkedIn profile refreshed from your edits.")
+                except Exception as e:
+                    st.error(f"Could not regenerate LinkedIn: {e}")
+        elif include_linkedin and not st.session_state.online:
+            st.info("LinkedIn refresh requires internet connection.")
+        else:
+            st.success("Edits saved.")
+
+
+def render_admin_dashboard():
+    import csv
+    from io import StringIO
+
+    st.markdown("# 🛠 Admin Dashboard")
+    st.divider()
+
+    # ── Month selector ────────────────────────────────────────────────────────
+    now = datetime.now(timezone.utc)
+    col_y, col_m, _ = st.columns([1, 1, 2])
+    with col_y:
+        year = st.selectbox("Year", list(range(now.year - 2, now.year + 1)), index=2)
+    with col_m:
+        month = st.selectbox("Month", list(range(1, 13)), index=now.month - 1,
+                             format_func=lambda m: datetime(2000, m, 1).strftime("%B"))
+
+    st.divider()
+
+    try:
+        from revizor_frank.storage import supabase_db
+        from revizor_frank.storage.supabase_db import calculate_cost
+        runs = supabase_db.get_monthly_runs(year, month)
+    except Exception as e:
+        st.error(f"Could not load Supabase data: {e}")
+        runs = []
+
+    egp_rate = USD_TO_EGP_RATE
+
+    # ── P&L Summary ───────────────────────────────────────────────────────────
+    st.markdown("### Monthly P&L")
+    if runs:
+        total_rev_usd = sum(float(r.get("price_usd") or 0) for r in runs)
+        total_cost_usd = sum(float(r.get("cost_usd") or 0) for r in runs)
+        profit_usd = total_rev_usd - total_cost_usd
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Sessions", len(runs))
+        c2.metric("Revenue (USD)", f"${total_rev_usd:,.2f}",
+                  delta=f"EGP {total_rev_usd * egp_rate:,.0f}")
+        c3.metric("AI Cost (USD)", f"${total_cost_usd:,.4f}")
+        c4.metric("Profit (USD)", f"${profit_usd:,.2f}",
+                  delta=f"EGP {profit_usd * egp_rate:,.0f}")
+
+        # Tier breakdown
+        st.divider()
+        st.markdown("**Sessions by Tier**")
+        tier_counts: dict[str, int] = {}
+        for r in runs:
+            t = r.get("tier", "unknown")
+            tier_counts[t] = tier_counts.get(t, 0) + 1
+        for t, cnt in tier_counts.items():
+            st.write(f"• {t}: **{cnt}** sessions")
+    else:
+        st.info("No data for the selected period.")
+
+    st.divider()
+
+    # ── Coupon Manager ────────────────────────────────────────────────────────
+    st.markdown("### Coupon Usage")
+    try:
+        coupon_stats = supabase_db.get_coupon_stats()
+    except Exception:
+        coupon_stats = []
+
+    if coupon_stats:
+        import pandas as pd  # type: ignore
+        df_coupons = pd.DataFrame(coupon_stats)
+        df_coupons["profit_usd"] = df_coupons["total_revenue_usd"] - df_coupons["total_cost_usd"]
+        st.dataframe(df_coupons, use_container_width=True, hide_index=True)
+    else:
+        st.info("No coupon usage found.")
+
+    st.divider()
+
+    # ── CSV Export ────────────────────────────────────────────────────────────
+    st.markdown("### Export Data")
+    col_exp1, col_exp2 = st.columns(2)
+
+    with col_exp1:
+        # Monthly export
+        if runs:
+            buf = StringIO()
+            if runs:
+                writer = csv.DictWriter(buf, fieldnames=runs[0].keys())
+                writer.writeheader()
+                writer.writerows(runs)
+            st.download_button(
+                "⬇️ Export This Month (CSV)",
+                data=buf.getvalue().encode("utf-8"),
+                file_name=f"revizor_runs_{year}_{month:02d}.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+
+    with col_exp2:
+        if st.button("Export All Runs (CSV)", use_container_width=True):
+            try:
+                all_runs = supabase_db.get_all_runs_for_export()
+                if all_runs:
+                    buf_all = StringIO()
+                    writer_all = csv.DictWriter(buf_all, fieldnames=all_runs[0].keys())
+                    writer_all.writeheader()
+                    writer_all.writerows(all_runs)
+                    st.download_button(
+                        "⬇️ Download All Runs CSV",
+                        data=buf_all.getvalue().encode("utf-8"),
+                        file_name="revizor_all_runs.csv",
+                        mime="text/csv",
+                        use_container_width=True,
+                        key="dl_all_csv",
+                    )
+                else:
+                    st.info("No data to export.")
+            except Exception as e:
+                st.error(f"Export failed: {e}")
+
+    st.divider()
+    if st.button("← Back to App", use_container_width=False):
+        st.session_state.stage = "select_service"
+        st.rerun()
+
+
 def _render_ats_issues(ats: dict):
     issues = ats.get("issues", [])
     if not issues:
@@ -816,11 +1164,11 @@ def _render_ats_issues(ats: dict):
     with col1:
         st.markdown("**Sections Found**")
         for s in ats.get("sections_found", []):
-            st.success(s.title(), icon="✓")
+            st.success(s.title(), icon="✅")
     with col2:
         st.markdown("**Sections Missing**")
         for s in ats.get("sections_missing", []):
-            st.error(s.title(), icon="✗")
+            st.error(s.title(), icon="❌")
 
     # Quality scores
     st.divider()
@@ -979,12 +1327,21 @@ def main():
 
     render_sidebar()
     stage = st.session_state.stage
-    if stage == "upload":
+    if stage == "select_service":
+        render_select_service()
+    elif stage == "upload":
         render_upload()
     elif stage == "processing":
         render_upload()  # pipeline runs within upload render
     elif stage == "results":
         render_results()
+    elif stage == "admin":
+        if st.session_state.get("user_role") == "admin":
+            render_admin_dashboard()
+        else:
+            st.error("Access denied.")
+            st.session_state.stage = "select_service"
+            st.rerun()
 
 
 if __name__ == "__main__":

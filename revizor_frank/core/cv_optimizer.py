@@ -170,39 +170,41 @@ def _get_client() -> anthropic.Anthropic:
     return anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 
-def _call_claude(prompt: str) -> str:
+def _call_claude(prompt: str) -> tuple[str, int, int]:
+    """Call Claude and return (text, input_tokens, output_tokens)."""
     client = _get_client()
     response = client.messages.create(
         model=CLAUDE_MODEL,
         max_tokens=MAX_TOKENS,
         messages=[{"role": "user", "content": prompt}],
     )
-    return response.content[0].text
+    input_tokens = response.usage.input_tokens if response.usage else 0
+    output_tokens = response.usage.output_tokens if response.usage else 0
+    return response.content[0].text, input_tokens, output_tokens
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def optimize_general(cv_data: dict) -> dict:
-    """Return a Claude-optimized general ATS CV."""
+def optimize_general(cv_data: dict) -> tuple[dict, int, int]:
+    """Return (claude-optimized general ATS CV, input_tokens, output_tokens)."""
     prompt = _build_general_prompt(cv_data)
-    raw = _call_claude(prompt)
+    raw, input_tokens, output_tokens = _call_claude(prompt)
     result = _extract_json(raw)
-    # Preserve raw_text from original
     result["raw_text"] = cv_data.get("raw_text", "")
-    return result
+    return result, input_tokens, output_tokens
 
 
-def optimize_jd_tailored(cv_data: dict, job_description: str, general_cv: dict) -> dict:
-    """Return a Claude-optimized JD-tailored CV."""
+def optimize_jd_tailored(cv_data: dict, job_description: str, general_cv: dict) -> tuple[dict, int, int]:
+    """Return (claude-optimized JD-tailored CV, input_tokens, output_tokens)."""
     prompt = _build_jd_prompt(cv_data, job_description, general_cv)
-    raw = _call_claude(prompt)
+    raw, input_tokens, output_tokens = _call_claude(prompt)
     result = _extract_json(raw)
     result["raw_text"] = cv_data.get("raw_text", "")
-    return result
+    return result, input_tokens, output_tokens
 
 
-def generate_linkedin(cv_data: dict, general_cv: dict, job_description: str = "") -> dict:
-    """Return a Claude-generated LinkedIn profile dict."""
+def generate_linkedin(cv_data: dict, general_cv: dict, job_description: str = "") -> tuple[dict, int, int]:
+    """Return (claude-generated LinkedIn profile dict, input_tokens, output_tokens)."""
     prompt = _build_linkedin_prompt(cv_data, general_cv, job_description)
-    raw = _call_claude(prompt)
-    return _extract_json(raw)
+    raw, input_tokens, output_tokens = _call_claude(prompt)
+    return _extract_json(raw), input_tokens, output_tokens
