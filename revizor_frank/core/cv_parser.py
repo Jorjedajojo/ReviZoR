@@ -1,6 +1,6 @@
 """CV file parser — extracts raw text and structured CVData from uploaded files.
 
-Supports: PDF (via PyMuPDF), DOCX (via python-docx), TXT.
+Supports: PDF (via pdfminer.six primary, PyMuPDF fallback), DOCX (via python-docx), TXT.
 All parsing is fully local — no network calls.
 
 CVData schema (TypedDict-style for reference):
@@ -33,12 +33,33 @@ from typing import BinaryIO
 # ── Text extraction ────────────────────────────────────────────────────────────
 
 def extract_text_from_pdf(file: BinaryIO) -> str:
-    import fitz  # PyMuPDF
+    """Extract text from a PDF using pdfminer.six (primary) with PyMuPDF fallback."""
     data = file.read()
-    doc = fitz.open(stream=data, filetype="pdf")
-    pages = [page.get_text("text") for page in doc]
-    doc.close()
-    return "\n".join(pages)
+
+    # Primary: pdfminer.six — produces clean, layout-aware text
+    try:
+        from pdfminer.high_level import extract_text as pdfminer_extract
+        from pdfminer.layout import LAParams
+        laparams = LAParams(line_margin=0.5, char_margin=2.0, word_margin=0.1)
+        text = pdfminer_extract(io.BytesIO(data), laparams=laparams)
+        if text and text.strip():
+            return text
+    except Exception:
+        pass
+
+    # Fallback: PyMuPDF
+    try:
+        import fitz
+        doc = fitz.open(stream=data, filetype="pdf")
+        pages = [page.get_text("text") for page in doc]
+        doc.close()
+        text = "\n".join(pages)
+        if text and text.strip():
+            return text
+    except Exception:
+        pass
+
+    return ""
 
 
 def extract_text_from_docx(file: BinaryIO) -> str:
@@ -94,18 +115,45 @@ _DATE_RE = re.compile(
     re.I,
 )
 
-# Section heading detection — covers common variations
+# Section heading detection — covers common CV heading variations.
+# Trailing :, -, _, – and decorative fill characters are stripped.
+# \s+ inside multi-word headings tolerates extra whitespace from PDF layout.
 _SECTION_PATTERNS: list[tuple[str, re.Pattern]] = [
-    ("summary",        re.compile(r"^\s*(summary|profile|objective|about me|professional summary)\s*$", re.I | re.M)),
-    ("experience",     re.compile(r"^\s*(experience|work experience|employment|work history|career history|professional experience)\s*$", re.I | re.M)),
-    ("education",      re.compile(r"^\s*(education|academic|qualifications|academic background)\s*$", re.I | re.M)),
-    ("skills",         re.compile(r"^\s*(skills|technical skills|core competencies|competencies|expertise)\s*$", re.I | re.M)),
-    ("certifications", re.compile(r"^\s*(certifications?|licenses?|credentials|accreditations?)\s*$", re.I | re.M)),
-    ("languages",      re.compile(r"^\s*(languages?)\s*$", re.I | re.M)),
-    ("projects",       re.compile(r"^\s*(projects?|personal projects?|key projects?)\s*$", re.I | re.M)),
-    ("publications",   re.compile(r"^\s*(publications?|papers?|research)\s*$", re.I | re.M)),
-    ("awards",         re.compile(r"^\s*(awards?|honors?|achievements?|recognitions?)\s*$", re.I | re.M)),
-    ("volunteer",      re.compile(r"^\s*(volunteer|volunteering|community|civic)\s*$", re.I | re.M)),
+    ("summary", re.compile(
+        r"^\s*(summary|profile|objective|about\s+me|professional\s+summary|"
+        r"career\s+objective|career\s+summary|personal\s+statement|"
+        r"executive\s+summary)\s*[:\-–_─]*\s*$", re.I | re.M)),
+    ("experience", re.compile(
+        r"^\s*(experience|work\s+experience|employment|work\s+history|"
+        r"career\s+history|professional\s+experience|employment\s+history|"
+        r"career\s+experience|relevant\s+experience)\s*[:\-–_─]*\s*$", re.I | re.M)),
+    ("education", re.compile(
+        r"^\s*(education|academic|qualifications|academic\s+background|"
+        r"education\s+[&and]+\s+training|educational\s+background|"
+        r"academic\s+qualifications)\s*[:\-–_─]*\s*$", re.I | re.M)),
+    ("skills", re.compile(
+        r"^\s*(skills|technical\s+skills|core\s+competencies|competencies|"
+        r"expertise|key\s+skills|skills\s+[&and]+\s+competencies|"
+        r"skill\s+set|areas\s+of\s+expertise)\s*[:\-–_─]*\s*$", re.I | re.M)),
+    ("certifications", re.compile(
+        r"^\s*(certifications?|licenses?|credentials|accreditations?|"
+        r"courses?|training|professional\s+development|"
+        r"certificates?\s+[&and]+\s+licenses?)\s*[:\-–_─]*\s*$", re.I | re.M)),
+    ("languages", re.compile(
+        r"^\s*(languages?|language\s+skills|linguistic\s+skills)\s*[:\-–_─]*\s*$",
+        re.I | re.M)),
+    ("projects", re.compile(
+        r"^\s*(projects?|personal\s+projects?|key\s+projects?|"
+        r"selected\s+projects?|notable\s+projects?)\s*[:\-–_─]*\s*$", re.I | re.M)),
+    ("publications", re.compile(
+        r"^\s*(publications?|papers?|research|research\s+[&and]+\s+publications?)\s*[:\-–_─]*\s*$",
+        re.I | re.M)),
+    ("awards", re.compile(
+        r"^\s*(awards?|honors?|achievements?|recognitions?|"
+        r"awards?\s+[&and]+\s+honors?)\s*[:\-–_─]*\s*$", re.I | re.M)),
+    ("volunteer", re.compile(
+        r"^\s*(volunteer|volunteering|community|civic|"
+        r"volunteer\s+experience)\s*[:\-–_─]*\s*$", re.I | re.M)),
 ]
 
 

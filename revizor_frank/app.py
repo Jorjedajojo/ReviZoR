@@ -216,6 +216,12 @@ def _init_state():
         "coupon_code":      "",
         "total_input_tokens":  0,
         "total_output_tokens": 0,
+        # Certificate upload
+        "uploaded_cv_bytes":      None,
+        "certificates":           [],   # confirmed cert dicts merged into CV
+        "pending_cert_results":   [],   # extracted but not yet confirmed
+        "cert_input_tokens":      0,
+        "cert_output_tokens":     0,
         # Inline editor
         "edited_cv_text":   "",
         # Auth — JWT mode
@@ -594,13 +600,150 @@ language, optimizes for your target role.
 
     if btn and uploaded:
         st.session_state.filename = uploaded.name
+        st.session_state.uploaded_cv_bytes = uploaded.getvalue()
         st.session_state.job_description = jd.strip()
-        _run_pipeline(uploaded)
+        st.session_state.certificates = []
+        st.session_state.pending_cert_results = []
+        st.session_state.cert_input_tokens = 0
+        st.session_state.cert_output_tokens = 0
+        st.session_state.stage = "upload_certs"
+        st.rerun()
+
+
+# ── Certificate upload stage ──────────────────────────────────────────────────
+
+def render_upload_certs():
+    st.markdown(f"# 📄 {APP_NAME}")
+    st.markdown(f"**CV uploaded:** `{st.session_state.filename}`")
+    st.divider()
+
+    col_left, col_right = st.columns([2, 1], gap="large")
+
+    with col_left:
+        st.markdown("### 📜 Add Certificates (Optional)")
+        st.caption(
+            "Upload certificate files — Claude will extract the details automatically. "
+            "Certificates are added to your CV before AI optimisation so they appear in all outputs."
+        )
+
+        cert_files = st.file_uploader(
+            "Certificate files (PDF, JPG, PNG)",
+            type=["pdf", "jpg", "jpeg", "png"],
+            accept_multiple_files=True,
+            key="cert_uploader",
+            label_visibility="collapsed",
+        )
+
+        if cert_files:
+            if st.button("🔍 Extract Certificate Details", type="secondary",
+                         use_container_width=True):
+                if not _check_online():
+                    st.warning("Certificate extraction requires internet. "
+                               "You can still proceed — add certs manually below.")
+                else:
+                    results = []
+                    total_in, total_out = 0, 0
+                    with st.spinner(f"Extracting details from {len(cert_files)} file(s)…"):
+                        try:
+                            from revizor_frank.core import cert_extractor
+                            for cf in cert_files:
+                                cert, in_tok, out_tok = cert_extractor.extract_certificate(
+                                    cf.getvalue(), cf.name
+                                )
+                                cert["_filename"] = cf.name
+                                results.append(cert)
+                                total_in += in_tok
+                                total_out += out_tok
+                        except Exception as e:
+                            st.error(f"Extraction failed: {e}")
+                    if results:
+                        st.session_state.pending_cert_results = results
+                        st.session_state.cert_input_tokens += total_in
+                        st.session_state.cert_output_tokens += total_out
+                        st.rerun()
+
+        # ── Editable form for extracted certs ─────────────────────────────────
+        pending = st.session_state.get("pending_cert_results", [])
+        if pending:
+            st.divider()
+            st.markdown("#### ✏️ Review & Edit Extracted Details")
+            st.caption("Correct any errors, then click **Confirm** to add to your CV.")
+
+            with st.form("cert_confirm_form"):
+                edited = []
+                for i, cert in enumerate(pending):
+                    label = cert.get("name") or cert.get("_filename", f"Certificate {i + 1}")
+                    st.markdown(f"**📜 {label}**")
+                    col_a, col_b = st.columns(2)
+                    with col_a:
+                        c_name   = st.text_input("Certificate Name",    value=cert.get("name", ""),          key=f"cname_{i}")
+                        c_issuer = st.text_input("Issuing Organisation", value=cert.get("issuer", ""),        key=f"ciss_{i}")
+                    with col_b:
+                        c_date   = st.text_input("Issue Date",           value=cert.get("date", ""),          key=f"cdate_{i}")
+                        c_id     = st.text_input("Credential ID (opt.)", value=cert.get("credential_id", ""), key=f"ccid_{i}")
+                    edited.append({"name": c_name, "issuer": c_issuer,
+                                   "date": c_date,  "credential_id": c_id})
+                    if i < len(pending) - 1:
+                        st.divider()
+
+                col_ok, col_skip_certs = st.columns(2)
+                with col_ok:
+                    confirmed = st.form_submit_button(
+                        "✅ Confirm & Optimize CV", type="primary", use_container_width=True
+                    )
+                with col_skip_certs:
+                    skipped_certs = st.form_submit_button(
+                        "Skip Certificates", use_container_width=True
+                    )
+
+            if confirmed:
+                st.session_state.certificates = [
+                    {"name": c["name"], "issuer": c["issuer"],
+                     "date": c["date"],  "credential_id": c.get("credential_id", "")}
+                    for c in edited if c.get("name")
+                ]
+                st.session_state.pending_cert_results = []
+                st.session_state.stage = "processing"
+                st.rerun()
+            elif skipped_certs:
+                st.session_state.pending_cert_results = []
+                st.session_state.stage = "processing"
+                st.rerun()
+
+        # ── Skip entirely ──────────────────────────────────────────────────────
+        if not pending:
+            st.markdown("<br>", unsafe_allow_html=True)
+            col_proc, col_back = st.columns([2, 1])
+            with col_proc:
+                if st.button("⏭️ No certificates — Proceed to Optimization",
+                             type="primary", use_container_width=True):
+                    st.session_state.stage = "processing"
+                    st.rerun()
+            with col_back:
+                if st.button("← Back to Upload", use_container_width=True):
+                    st.session_state.stage = "upload"
+                    st.rerun()
+
+    with col_right:
+        st.markdown("### Why add certificates?")
+        st.markdown("""
+Adding certificates helps Claude write a stronger CV:
+
+- **ATS scoring** — certifications are a key scoring factor
+- **All sections** — appear in PDF, DOCX, and LinkedIn outputs
+- **Context** — Claude references them when rewriting your summary
+
+**Supported formats:**
+- PDF certificates
+- JPG / PNG images of certificates
+
+Certificate extraction is a separate, lightweight API call — it does not inflate your main optimisation cost.
+        """)
 
 
 # ── Processing pipeline ───────────────────────────────────────────────────────
 
-def _run_pipeline(uploaded_file):
+def _run_pipeline():
     """Run the full parse → analyze → optimize → LinkedIn pipeline."""
     from revizor_frank.core import cv_parser, cv_analyzer, ats_engine
     from revizor_frank.core import linkedin_gen
@@ -609,7 +752,14 @@ def _run_pipeline(uploaded_file):
     tier = st.session_state.get("service_tier", "cv_linkedin")
     include_linkedin = (tier != "cv_only")
 
-    st.session_state.stage = "processing"
+    cv_bytes = st.session_state.get("uploaded_cv_bytes")
+    filename = st.session_state.get("filename", "cv")
+
+    if not cv_bytes:
+        st.session_state.stage = "upload"
+        st.rerun()
+        return
+
     st.session_state.error = None
     st.session_state.total_input_tokens = 0
     st.session_state.total_output_tokens = 0
@@ -620,8 +770,20 @@ def _run_pipeline(uploaded_file):
     try:
         # 1. Parse
         status.info(f"⚙️ {S['parsing_cv']}")
-        file_bytes = io.BytesIO(uploaded_file.getvalue())
-        parsed = cv_parser.parse_cv(file_bytes, uploaded_file.name)
+        file_bytes = io.BytesIO(cv_bytes)
+        parsed = cv_parser.parse_cv(file_bytes, filename)
+
+        # Merge user-confirmed certificates into parsed CV before any processing
+        confirmed_certs = st.session_state.get("certificates", [])
+        if confirmed_certs:
+            existing_names = {c.get("name", "").lower() for c in parsed.get("certifications", [])}
+            for cert in confirmed_certs:
+                if cert.get("name", "").lower() not in existing_names:
+                    parsed.setdefault("certifications", []).append({
+                        "name": cert.get("name", ""),
+                        "issuer": cert.get("issuer", ""),
+                        "date": cert.get("date", ""),
+                    })
         st.session_state.parsed_cv = parsed
         progress.progress(20, text=S["parsing_cv"])
 
@@ -723,6 +885,9 @@ def _run_pipeline(uploaded_file):
                 coupon_code=st.session_state.get("coupon_code", ""),
                 input_tokens=total_in,
                 output_tokens=total_out,
+                certificates=st.session_state.get("certificates") or None,
+                cert_input_tokens=st.session_state.get("cert_input_tokens", 0),
+                cert_output_tokens=st.session_state.get("cert_output_tokens", 0),
             )
         except Exception:
             pass  # Supabase save is best-effort; never break the main flow
@@ -1331,8 +1496,10 @@ def main():
         render_select_service()
     elif stage == "upload":
         render_upload()
+    elif stage == "upload_certs":
+        render_upload_certs()
     elif stage == "processing":
-        render_upload()  # pipeline runs within upload render
+        _run_pipeline()
     elif stage == "results":
         render_results()
     elif stage == "admin":

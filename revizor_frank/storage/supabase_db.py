@@ -14,8 +14,16 @@ Table schema (run once in your Supabase SQL editor):
       input_tokens INTEGER DEFAULT 0,
       output_tokens INTEGER DEFAULT 0,
       cost_usd DECIMAL(10,6),
-      session_id TEXT
+      session_id TEXT,
+      certificates JSONB,
+      cert_input_tokens INTEGER DEFAULT 0,
+      cert_output_tokens INTEGER DEFAULT 0
     );
+
+    -- If upgrading an existing table, add the new columns:
+    -- ALTER TABLE cv_runs ADD COLUMN IF NOT EXISTS certificates JSONB;
+    -- ALTER TABLE cv_runs ADD COLUMN IF NOT EXISTS cert_input_tokens INTEGER DEFAULT 0;
+    -- ALTER TABLE cv_runs ADD COLUMN IF NOT EXISTS cert_output_tokens INTEGER DEFAULT 0;
 
 Pricing model (claude-sonnet-4-6):
   Input:  $3.00 per 1,000,000 tokens
@@ -79,6 +87,9 @@ def save_cv_run(
     coupon_code: str,
     input_tokens: int,
     output_tokens: int,
+    certificates: Optional[list] = None,
+    cert_input_tokens: int = 0,
+    cert_output_tokens: int = 0,
 ) -> Optional[str]:
     """Save a completed CV run to Supabase.
 
@@ -88,19 +99,22 @@ def save_cv_run(
     if client is None:
         return None
 
-    cost = calculate_cost(input_tokens, output_tokens)
+    cost = calculate_cost(input_tokens + cert_input_tokens, output_tokens + cert_output_tokens)
 
     row = {
         "session_id": session_id,
         "original_cv_text": original_cv_text,
         "revised_cv_text": revised_cv_text,
-        "linkedin_output": linkedin_output,  # supabase-py handles JSONB serialization
+        "linkedin_output": linkedin_output,
         "tier": tier,
         "price_usd": price_usd,
         "coupon_code": coupon_code or None,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "cost_usd": round(cost, 6),
+        "certificates": certificates or None,
+        "cert_input_tokens": cert_input_tokens,
+        "cert_output_tokens": cert_output_tokens,
     }
 
     try:
