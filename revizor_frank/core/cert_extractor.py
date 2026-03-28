@@ -51,26 +51,64 @@ def _empty_cert() -> dict:
 # ── PDF certificate ───────────────────────────────────────────────────────────
 
 def extract_from_pdf_bytes(pdf_bytes: bytes) -> tuple[dict, int, int]:
-    """Extract cert fields from a PDF file using pdfminer + Claude."""
+    """Extract cert fields from a PDF certificate.
+
+    Two-step strategy:
+    1. pdfminer.six extracts text → Claude text call (text-based PDFs)
+    2. If pdfminer returns < 100 chars, send PDF as document to Claude vision
+       (image-based / scanned certificates with no text layer)
+    """
+    text = ""
     try:
         from pdfminer.high_level import extract_text as pdfminer_extract
         text = pdfminer_extract(io.BytesIO(pdf_bytes))
     except Exception:
-        text = ""
-
-    if not text or not text.strip():
-        return _empty_cert(), 0, 0
+        pass
 
     client = _get_client()
+
+    # ── Text-based certificate ────────────────────────────────────────────────
+    if text and len(text.strip()) > 100:
+        response = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=512,
+            messages=[{
+                "role": "user",
+                "content": f"{_CERT_PROMPT}\n\nCERTIFICATE TEXT:\n{text[:4000]}",
+            }],
+        )
+        in_tok  = response.usage.input_tokens  if response.usage else 0
+        out_tok = response.usage.output_tokens if response.usage else 0
+        try:
+            result = _extract_json(response.content[0].text)
+        except Exception:
+            result = _empty_cert()
+        return result, in_tok, out_tok
+
+    # ── Image-based certificate — send PDF directly via Claude vision ─────────
+    b64 = base64.standard_b64encode(pdf_bytes).decode()
     response = client.messages.create(
         model=CLAUDE_MODEL,
         max_tokens=512,
         messages=[{
             "role": "user",
-            "content": f"{_CERT_PROMPT}\n\nCERTIFICATE TEXT:\n{text[:4000]}",
+            "content": [
+                {
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "application/pdf",
+                        "data": b64,
+                    },
+                },
+                {
+                    "type": "text",
+                    "text": _CERT_PROMPT,
+                },
+            ],
         }],
     )
-    in_tok = response.usage.input_tokens if response.usage else 0
+    in_tok  = response.usage.input_tokens  if response.usage else 0
     out_tok = response.usage.output_tokens if response.usage else 0
     try:
         result = _extract_json(response.content[0].text)

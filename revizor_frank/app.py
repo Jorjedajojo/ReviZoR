@@ -771,7 +771,12 @@ def _run_pipeline():
         # 1. Parse
         status.info(f"⚙️ {S['parsing_cv']}")
         file_bytes = io.BytesIO(cv_bytes)
-        parsed = cv_parser.parse_cv(file_bytes, filename)
+        parsed, pdf_in_tok, pdf_out_tok = cv_parser.parse_cv(
+            file_bytes, filename, api_key=ANTHROPIC_API_KEY
+        )
+        # Accumulate vision-extraction tokens into the cert bucket
+        st.session_state.cert_input_tokens  = st.session_state.get("cert_input_tokens",  0) + pdf_in_tok
+        st.session_state.cert_output_tokens = st.session_state.get("cert_output_tokens", 0) + pdf_out_tok
 
         # Merge user-confirmed certificates into parsed CV before any processing
         confirmed_certs = st.session_state.get("certificates", [])
@@ -1164,7 +1169,7 @@ def _render_edit_cv_tab(include_linkedin: bool):
                     import io as _io
                     raw_bytes = _io.BytesIO(edited.encode("utf-8"))
                     raw_bytes.name = "edited_cv.txt"
-                    edited_parsed = _parse_cv(raw_bytes, "edited_cv.txt")
+                    edited_parsed, _, _ = _parse_cv(raw_bytes, "edited_cv.txt")
                     linkedin, in_tok, out_tok = cv_optimizer.generate_linkedin(
                         edited_parsed,
                         st.session_state.ai_cv_general,

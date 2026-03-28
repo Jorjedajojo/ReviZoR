@@ -1,7 +1,12 @@
 """CV file parser — extracts raw text and structured CVData from uploaded files.
 
-Supports: PDF (via pdfminer.six primary, PyMuPDF fallback), DOCX (via python-docx), TXT.
-All parsing is fully local — no network calls.
+Supports:
+  - PDF: pdfminer.six (text-based) → Claude vision API (image-based/designed PDFs)
+  - DOCX: python-docx
+  - TXT: plain UTF-8 / latin-1
+
+All parsing is fully local except for the Claude vision fallback used only when
+pdfminer and PyMuPDF both return fewer than 100 characters (image-based PDF).
 
 CVData schema (TypedDict-style for reference):
 {
@@ -24,42 +29,92 @@ CVData schema (TypedDict-style for reference):
 
 from __future__ import annotations
 
+import base64
 import io
 import re
 from pathlib import Path
 from typing import BinaryIO
 
+import anthropic
+
 
 # ── Text extraction ────────────────────────────────────────────────────────────
 
-def extract_text_from_pdf(file: BinaryIO) -> str:
-    """Extract text from a PDF using pdfminer.six (primary) with PyMuPDF fallback."""
+def extract_text_from_pdf(file: BinaryIO, api_key: str = "") -> tuple[str, int, int]:
+    """Extract text from a PDF. Returns (text, input_tokens, output_tokens).
+
+    Three-step strategy:
+    1. pdfminer.six  — fast, fully local, great for text-based PDFs
+    2. PyMuPDF       — local fallback for PDFs pdfminer can't parse
+    3. Claude vision — final fallback for image-based / designed PDFs that
+                       contain no text layer (e.g. exported from Canva/Figma)
+    Steps 1 and 2 are tried first; Claude vision is only called when both
+    return fewer than 100 characters of meaningful text.
+    """
     data = file.read()
 
-    # Primary: pdfminer.six — produces clean, layout-aware text
+    # ── Step 1: pdfminer.six ─────────────────────────────────────────────────
     try:
         from pdfminer.high_level import extract_text as pdfminer_extract
         from pdfminer.layout import LAParams
         laparams = LAParams(line_margin=0.5, char_margin=2.0, word_margin=0.1)
         text = pdfminer_extract(io.BytesIO(data), laparams=laparams)
-        if text and text.strip():
-            return text
+        if text and len(text.strip()) > 100:
+            return text, 0, 0
     except Exception:
         pass
 
-    # Fallback: PyMuPDF
+    # ── Step 2: PyMuPDF ──────────────────────────────────────────────────────
     try:
         import fitz
         doc = fitz.open(stream=data, filetype="pdf")
         pages = [page.get_text("text") for page in doc]
         doc.close()
         text = "\n".join(pages)
-        if text and text.strip():
-            return text
+        if text and len(text.strip()) > 100:
+            return text, 0, 0
     except Exception:
         pass
 
-    return ""
+    # ── Step 3: Claude vision (image-based PDF) ───────────────────────────────
+    # Claude natively supports PDF documents sent as base64 via the document type.
+    key = api_key or ""
+    if not key:
+        raise ValueError(
+            "This CV appears to be an image-based PDF (no text layer). "
+            "An Anthropic API key is required to extract text via Claude vision."
+        )
+    b64 = base64.standard_b64encode(data).decode()
+    client = anthropic.Anthropic(api_key=key)
+    response = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=4096,
+        messages=[{
+            "role": "user",
+            "content": [
+                {
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "application/pdf",
+                        "data": b64,
+                    },
+                },
+                {
+                    "type": "text",
+                    "text": (
+                        "Extract all text content from this CV/resume exactly as it appears. "
+                        "Include every section, every line, every detail — contact information, "
+                        "summary, work experience, education, skills, certifications, languages, "
+                        "and any other sections present. Output plain text only, no markdown."
+                    ),
+                },
+            ],
+        }],
+    )
+    in_tok  = response.usage.input_tokens  if response.usage else 0
+    out_tok = response.usage.output_tokens if response.usage else 0
+    return response.content[0].text, in_tok, out_tok
 
 
 def extract_text_from_docx(file: BinaryIO) -> str:
@@ -84,14 +139,15 @@ def extract_text_from_txt(file: BinaryIO) -> str:
         return raw.decode("latin-1", errors="replace")
 
 
-def extract_text(file: BinaryIO, filename: str) -> str:
+def extract_text(file: BinaryIO, filename: str, api_key: str = "") -> tuple[str, int, int]:
+    """Extract raw text from any supported file. Returns (text, input_tokens, output_tokens)."""
     ext = Path(filename).suffix.lower()
     if ext == ".pdf":
-        return extract_text_from_pdf(file)
+        return extract_text_from_pdf(file, api_key=api_key)
     elif ext == ".docx":
-        return extract_text_from_docx(file)
+        return extract_text_from_docx(file), 0, 0
     else:
-        return extract_text_from_txt(file)
+        return extract_text_from_txt(file), 0, 0
 
 
 # ── Regex helpers ─────────────────────────────────────────────────────────────
@@ -409,9 +465,13 @@ def _parse_projects(text: str) -> list[dict]:
 
 # ── Main parse function ───────────────────────────────────────────────────────
 
-def parse_cv(file: BinaryIO, filename: str) -> dict:
-    """Parse an uploaded CV file and return a CVData dict."""
-    raw_text = extract_text(file, filename)
+def parse_cv(file: BinaryIO, filename: str, api_key: str = "") -> tuple[dict, int, int]:
+    """Parse an uploaded CV file. Returns (CVData dict, input_tokens, output_tokens).
+
+    input_tokens / output_tokens are non-zero only when a Claude vision call was
+    required to extract text from an image-based PDF (no text layer).
+    """
+    raw_text, in_tok, out_tok = extract_text(file, filename, api_key=api_key)
     sections = _split_into_sections(raw_text)
 
     contact = _extract_contact(sections.get("header", ""))
@@ -427,4 +487,4 @@ def parse_cv(file: BinaryIO, filename: str) -> dict:
         "projects":       _parse_projects(sections.get("projects", "")),
         "raw_text":       raw_text,
     }
-    return cv_data
+    return cv_data, in_tok, out_tok
