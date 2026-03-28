@@ -429,12 +429,12 @@ def render_sidebar():
         online = _check_online()
         st.session_state.online = online
         if online:
-            st.success(f"🟢 {S['status_online']}", icon=None)
+            st.success(f"🟢 {S['status_online']}")
         else:
             if ANTHROPIC_API_KEY:
-                st.warning("🟡 API key found but no internet", icon=None)
+                st.warning("🟡 API key found but no internet")
             else:
-                st.info(f"⚪ {S['status_offline']}", icon=None)
+                st.info(f"⚪ {S['status_offline']}")
 
         st.divider()
         st.markdown("### Template")
@@ -1164,11 +1164,11 @@ def _render_ats_issues(ats: dict):
     with col1:
         st.markdown("**Sections Found**")
         for s in ats.get("sections_found", []):
-            st.success(s.title(), icon="✅")
+            st.success(s.title())
     with col2:
         st.markdown("**Sections Missing**")
         for s in ats.get("sections_missing", []):
-            st.error(s.title(), icon="❌")
+            st.error(s.title())
 
     # Quality scores
     st.divider()
@@ -1260,7 +1260,7 @@ def _format_download_btn(col, cv: dict, fmt: str, template: str, filename: str):
             )
     except Exception as e:
         with col:
-            st.error(f"{fmt.upper()} failed", icon="⚠️")
+            st.error(f"{fmt.upper()} failed")
 
 
 @st.cache_data(ttl=300, show_spinner=False)
