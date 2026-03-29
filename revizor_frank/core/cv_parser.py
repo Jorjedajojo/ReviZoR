@@ -629,21 +629,21 @@ def _fallback_language_scan(raw_text: str) -> list[str]:
     for lang in _KNOWN_LANGUAGES:
         if lang not in text_lower:
             continue
-        # Find the occurrence and grab surrounding context for proficiency
-        pattern = rf"\b{re.escape(lang)}\b([^\n]{{0,40}})"
+        # Grab 50 chars before AND after the language name to catch patterns like
+        # "Native Arabic", "Fluent in English", "Arabic – Native"
+        pattern = rf"([^\n]{{0,50}})\b{re.escape(lang)}\b([^\n]{{0,50}})"
         for m in re.finditer(pattern, raw_text, re.I):
-            context = m.group(0).strip()
             norm = lang.lower()
             if norm in seen:
                 break
             seen.add(norm)
-            # Look for proficiency word in context
+            context = m.group(0)
+            # Look for proficiency word in full context (before + after)
             prof = next(
                 (p for p in _PROFICIENCY_WORDS if p in context.lower()),
                 None,
             )
             if prof:
-                # Capitalise sensibly
                 entry = f"{lang.title()} ({prof.title()})"
             else:
                 entry = lang.title()

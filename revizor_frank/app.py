@@ -797,21 +797,6 @@ def render_upload_certs():
                         st.session_state.stage = "upload"
                         st.rerun()
 
-        # ── Personal details (DOB) ─────────────────────────────────────────────
-        st.divider()
-        st.markdown("### 👤 Personal Details (Optional)")
-        st.caption(
-            "Some applications require a Date of Birth. Leave blank if not needed — "
-            "it will also be auto-extracted from your CV if present."
-        )
-        dob_input = st.text_input(
-            "Date of Birth",
-            value=st.session_state.get("dob", ""),
-            placeholder="e.g. 1 January 1990  or  01/01/1990",
-            key="dob_input_field",
-        )
-        st.session_state.dob = dob_input
-
         # ── Skip entirely (no files classified yet) ────────────────────────────
         if not classified:
             st.markdown("<br>", unsafe_allow_html=True)
@@ -1130,9 +1115,19 @@ def _cv_section_text(cv: dict, section: str, idx: int = -1) -> str:
 
 
 def _init_review_state():
-    """Populate review_decisions from offline_cv (original) vs ai_cv_general (revised)."""
-    original = st.session_state.offline_cv or {}
-    revised  = st.session_state.ai_cv_general or st.session_state.offline_cv or {}
+    """Populate review_decisions from parsed_cv (original) vs ai_cv_general (revised).
+
+    parsed_cv is the raw-parsed upload — the most faithful representation of the
+    candidate's original document.  offline_cv has light rule-based edits (date
+    normalisation, de-duplication) but the same structural content, so it is used
+    as fallback.  ai_cv_general is always the "revised" side.
+    """
+    # Use parsed_cv as "original" — it has the unmodified content from the upload.
+    # Fall back to offline_cv if parsed_cv is absent.
+    _parsed   = st.session_state.get("parsed_cv") or {}
+    _offline  = st.session_state.offline_cv or {}
+    original  = _parsed if (_parsed.get("summary") or _parsed.get("experience")) else _offline
+    revised   = st.session_state.ai_cv_general or _offline or {}
 
     decisions: dict = {}
 
@@ -1727,6 +1722,14 @@ def _render_edit_cv_tab(include_linkedin: bool):
         st.warning("No CV available to edit yet.")
         return
 
+    # Passive DOB note — only show when DOB was not extracted from the CV
+    if not cv_source.get("dob") and not st.session_state.get("dob"):
+        st.info(
+            "ℹ️ Date of birth not found in your CV. "
+            "Add it manually in the text below if needed, e.g. "
+            "**Date of Birth: 1 January 1990**"
+        )
+
     # Initialize edit buffer from CV if not already set
     if not st.session_state.get("edited_cv_text"):
         st.session_state.edited_cv_text = _cv_to_text(cv_source)
@@ -2037,10 +2040,21 @@ def _format_download_btn(col, cv: dict, fmt: str, template: str, filename: str,
             st.error(f"{fmt.upper()} failed")
 
 
-@st.cache_data(ttl=300, show_spinner=False)
 def _build_export_bytes(cv: dict, fmt: str, template: str,
                         template_color: str = "") -> bytes:
-    """Build export bytes. Cached to avoid re-generating on every rerun."""
+    """Build export bytes for the given CV dict and format."""
+    import sys
+    _exp_count = len(cv.get("experience", []))
+    _edu_count = len(cv.get("education", []))
+    _skills_cats = len(cv.get("skills", {}).get("categories", []))
+    print(
+        f"[export] fmt={fmt} template={template} "
+        f"keys={sorted(k for k,v in cv.items() if v and k != 'raw_text')} "
+        f"exp={_exp_count} edu={_edu_count} skills_cats={_skills_cats} "
+        f"certs={len(cv.get('certifications', []))} langs={len(cv.get('languages', []))}",
+        file=sys.stderr,
+    )
+
     tmp_dir = Path(tempfile.gettempdir()) / "revizor_frank"
     tmp_dir.mkdir(exist_ok=True)
     out_path = str(tmp_dir / f"export_{uuid.uuid4().hex}.{fmt}")

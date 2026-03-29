@@ -60,6 +60,32 @@ WEAK_VERBS: set[str] = {
 REQUIRED_SECTIONS: list[str] = ["summary", "experience", "education", "skills"]
 RECOMMENDED_SECTIONS: list[str] = ["certifications", "languages", "projects"]
 
+SECTION_ALIASES: dict[str, list[str]] = {
+    "summary": [
+        "summary", "profile", "professional summary", "career profile",
+        "personal profile", "objective", "career objective", "about me",
+        "about", "overview", "executive summary", "brief", "introduction",
+        "خلاصة", "ملخص", "الهدف", "نبذة",
+    ],
+    "experience": [
+        "experience", "work experience", "professional experience",
+        "employment history", "career history", "work history",
+        "employment", "career experience", "relevant experience",
+        "الخبرة", "الخبرات", "تاريخ العمل",
+    ],
+    "education": [
+        "education", "educational background", "academic background",
+        "qualifications", "academic qualifications", "academic history",
+        "التعليم", "المؤهلات",
+    ],
+    "skills": [
+        "skills", "core skills", "key skills", "technical skills",
+        "competencies", "core competencies", "areas of expertise",
+        "expertise", "skill set", "technical competencies",
+        "المهارات", "الكفاءات",
+    ],
+}
+
 # Patterns that indicate ATS-hostile formatting artifacts
 _TABLE_ARTIFACT_RE = re.compile(r"\t{3,}|[ ]{10,}")
 _GRAPHICS_RE = re.compile(r"\[(?:image|photo|figure|logo)\]", re.I)
@@ -136,13 +162,16 @@ def _check_sections(cv: dict) -> tuple[list[dict], list[str], list[str]]:
     issues = []
     found = []
     missing = []
+    raw = cv.get("raw_text", "").lower()
 
-    for section in REQUIRED_SECTIONS:
-        data = cv.get(section)
-        has_data = bool(data) if not isinstance(data, dict) else bool(
-            data.get("categories") and any(c.get("items") for c in data["categories"])
-        )
-        if has_data:
+    for section, aliases in SECTION_ALIASES.items():
+        if section == "skills":
+            has_data = bool(cv.get("skills", {}).get("categories") and
+                            any(c.get("items") for c in cv["skills"]["categories"]))
+        else:
+            has_data = bool(cv.get(section))
+        found_in_raw = any(alias in raw for alias in aliases)
+        if has_data or found_in_raw:
             found.append(section)
         else:
             missing.append(section)
@@ -153,8 +182,7 @@ def _check_sections(cv: dict) -> tuple[list[dict], list[str], list[str]]:
             ))
 
     for section in RECOMMENDED_SECTIONS:
-        data = cv.get(section)
-        if data:
+        if cv.get(section):
             found.append(section)
 
     return issues, found, missing
