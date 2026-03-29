@@ -291,11 +291,17 @@ class BaseTemplate:
         if cv.get("skills", {}).get("categories"):
             story.extend(self._section_heading("Skills"))
             for cat in cv["skills"]["categories"]:
-                items = ", ".join(cat.get("items", []))
-                if items:
-                    story.append(Paragraph(
-                        f"<b>{cat['name']}:</b>  {items}", bs
-                    ))
+                items = cat.get("items", [])
+                if not items:
+                    continue
+                cat_name = cat.get("name", "Skills")
+                if "technical" in cat_name.lower():
+                    # Technical Competencies: pill-style with brackets
+                    pills = "  ".join(f"[{item}]" for item in items)
+                    story.append(Paragraph(f"<b>{cat_name}:</b>  {pills}", bs))
+                else:
+                    # Core Competencies: comma-separated paragraph
+                    story.append(Paragraph(f"<b>{cat_name}:</b>  {', '.join(items)}", bs))
 
         # ── Certifications ────────────────────────────────────────────────────
         if cv.get("certifications"):
@@ -307,6 +313,19 @@ class BaseTemplate:
                 if cert.get("date"):
                     line += f"  ({cert['date']})"
                 story.append(Paragraph(f"• {line}", bullets))
+
+        # ── Training ──────────────────────────────────────────────────────────
+        if cv.get("training"):
+            story.extend(self._section_heading("Professional Training"))
+            for item in cv["training"]:
+                line = item.get("name", "")
+                if item.get("organisation"):
+                    line += f"  —  {item['organisation']}"
+                if item.get("date"):
+                    line += f"  ({item['date']})"
+                story.append(Paragraph(f"• {line}", bullets))
+                if item.get("description"):
+                    story.append(Paragraph(item["description"], muted))
 
         # ── Projects ─────────────────────────────────────────────────────────
         if cv.get("projects"):

@@ -153,14 +153,21 @@ def export_docx(cv_data: dict, template_name: str, output_path: str,
     if cv_data.get("skills", {}).get("categories"):
         add_section_heading("Skills")
         for cat in cv_data["skills"]["categories"]:
-            items = ", ".join(cat.get("items", []))
-            if items:
-                p = doc.add_paragraph()
-                r_cat = p.add_run(f"{cat['name']}: ")
-                r_cat.bold = True
-                r_cat.font.size = Pt(9.5)
-                r_items = p.add_run(items)
-                r_items.font.size = Pt(9.5)
+            items = cat.get("items", [])
+            if not items:
+                continue
+            cat_name = cat.get("name", "Skills")
+            p = doc.add_paragraph()
+            r_cat = p.add_run(f"{cat_name}: ")
+            r_cat.bold = True
+            r_cat.font.size = Pt(9.5)
+            if "technical" in cat_name.lower():
+                # Technical Competencies: pill-style with brackets
+                r_items = p.add_run("  ".join(f"[{i}]" for i in items))
+            else:
+                # Core Competencies: comma-separated
+                r_items = p.add_run(", ".join(items))
+            r_items.font.size = Pt(9.5)
 
     # ── Certifications ────────────────────────────────────────────────────────
     if cv_data.get("certifications"):
@@ -172,6 +179,19 @@ def export_docx(cv_data: dict, template_name: str, output_path: str,
             if cert.get("date"):
                 line += f"  ({cert['date']})"
             add_bullet(line)
+
+    # ── Training ──────────────────────────────────────────────────────────────
+    if cv_data.get("training"):
+        add_section_heading("Professional Training")
+        for item in cv_data["training"]:
+            line = item.get("name", "")
+            if item.get("organisation"):
+                line += f"  —  {item['organisation']}"
+            if item.get("date"):
+                line += f"  ({item['date']})"
+            add_bullet(line)
+            if item.get("description"):
+                add_body(item["description"], color="555555", size=9.0)
 
     # ── Projects ──────────────────────────────────────────────────────────────
     if cv_data.get("projects"):

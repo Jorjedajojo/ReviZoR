@@ -1119,6 +1119,12 @@ def _cv_section_text(cv: dict, section: str, idx: int = -1) -> str:
             for c in cv.get("certifications", []) if c.get("name")
         )
 
+    if section == "training":
+        return "\n".join(
+            f"• {t.get('name', '')} — {t.get('organisation', '')} ({t.get('date', '')})"
+            for t in cv.get("training", []) if t.get("name")
+        )
+
     if section == "languages":
         return ", ".join(cv.get("languages", []))
 
@@ -1358,14 +1364,6 @@ def _init_review_state():
     original  = _parsed if (_parsed.get("summary") or _parsed.get("experience")) else _offline
     revised   = st.session_state.ai_cv_general or _offline or {}
 
-    # Debug: confirm what parsed_cv actually contains at this point
-    st.caption(
-        f"[debug] parsed_cv keys: {list(_parsed.keys()) if _parsed else 'EMPTY'} | "
-        f"summary present: {bool(_parsed.get('summary'))} | "
-        f"exp entries: {len(_parsed.get('experience', []))} | "
-        f"using: {'parsed_cv' if original is _parsed else 'offline_cv'}"
-    )
-
     decisions: dict = {}
 
     def _add(key, label, section, idx=-1):
@@ -1389,6 +1387,7 @@ def _init_review_state():
 
     _add("skills",         "Skills",         "skills")
     _add("certifications", "Certifications", "certifications")
+    _add("training",       "Training",       "training")
     _add("languages",      "Languages",      "languages")
 
     st.session_state.review_decisions = decisions
@@ -2074,8 +2073,6 @@ def _render_edit_cv_tab(include_linkedin: bool):
             st.session_state.edited_cv = None
             st.warning(f"Could not re-parse edited text: {_parse_err}. Downloads may not reflect edits.")
 
-        st.caption(f"edited_cv set: {bool(st.session_state.get('edited_cv'))}")
-
         if include_linkedin and st.session_state.online and st.session_state.ai_cv_general:
             with st.spinner("Regenerating LinkedIn profile from edited CV…"):
                 try:
@@ -2274,6 +2271,31 @@ def _render_downloads():
         f"Template: **{template_name}**  ·  All formats are ATS-safe{color_note}",
         unsafe_allow_html=True,
     )
+
+    # ── Colour adjustment expander ────────────────────────────────────────────
+    _PRESET_COLORS = {
+        "Navy (default)": "#002147",
+        "Charcoal & Gold": "#2c2c2c",
+        "Forest Green": "#1a4731",
+        "Burgundy": "#6b1a2a",
+        "Slate Blue": "#2d4a7a",
+        "Dark Teal": "#1a4a4a",
+    }
+    with st.expander("Adjust CV colours", expanded=False):
+        col1, col2 = st.columns(2)
+        with col1:
+            preset = st.selectbox(
+                "Preset palette",
+                list(_PRESET_COLORS.keys()),
+                key="dl_color_preset",
+            )
+        with col2:
+            current = st.session_state.get("template_color") or _PRESET_COLORS[preset]
+            custom = st.color_picker("Custom colour", value=current, key="dl_color_picker")
+        if st.button("Apply colour", key="dl_apply_color"):
+            chosen = custom if custom != current else _PRESET_COLORS[preset]
+            st.session_state.template_color = chosen
+            st.rerun()
 
     has_general = bool(st.session_state.ai_cv_general or st.session_state.offline_cv)
     has_jd_cv = bool(st.session_state.ai_cv_jd)
@@ -2491,8 +2513,19 @@ def main():
             render_login()
             return
 
+    # ── Sync stage from URL (enables browser back/forward) ───────────────────
+    url_stage = st.query_params.get("stage")
+    valid_stages = ("select_service", "upload", "upload_certs", "processing",
+                    "review_changes", "select_template", "results")
+    if url_stage and url_stage in valid_stages:
+        if st.session_state.get("stage") != url_stage:
+            st.session_state.stage = url_stage
+
     render_sidebar()
     stage = st.session_state.stage
+    # Keep URL in sync with current stage
+    st.query_params["stage"] = stage
+
     if stage == "select_service":
         render_select_service()
     elif stage == "upload":

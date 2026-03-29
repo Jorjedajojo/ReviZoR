@@ -94,6 +94,21 @@ def export_txt(cv_data: dict, output_path: str) -> str:
             lines.append(f"  * {line}")
         lines.append("")
 
+    # ── Training ──────────────────────────────────────────────────────────────
+    if cv_data.get("training"):
+        lines.append("PROFESSIONAL TRAINING")
+        lines.append(_divider("-"))
+        for item in cv_data["training"]:
+            line = item.get("name", "")
+            if item.get("organisation"):
+                line += f"  —  {item['organisation']}"
+            if item.get("date"):
+                line += f"  ({item['date']})"
+            lines.append(f"  * {line}")
+            if item.get("description"):
+                lines.append(f"    {item['description']}")
+        lines.append("")
+
     # ── Projects ──────────────────────────────────────────────────────────────
     if cv_data.get("projects"):
         lines.append("PROJECTS")

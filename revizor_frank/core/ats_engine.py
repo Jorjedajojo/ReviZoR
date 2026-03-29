@@ -58,7 +58,7 @@ WEAK_VERBS: set[str] = {
 }
 
 REQUIRED_SECTIONS: list[str] = ["summary", "experience", "education", "skills"]
-RECOMMENDED_SECTIONS: list[str] = ["certifications", "languages", "projects"]
+RECOMMENDED_SECTIONS: list[str] = ["certifications", "training", "languages", "projects"]
 
 SECTION_ALIASES: dict[str, list[str]] = {
     "summary": [
@@ -165,12 +165,21 @@ def _check_sections(cv: dict) -> tuple[list[dict], list[str], list[str]]:
     raw = cv.get("raw_text", "").lower()
 
     for section, aliases in SECTION_ALIASES.items():
+        # Structured data check is authoritative — raw text is only a fallback
         if section == "skills":
-            has_data = bool(cv.get("skills", {}).get("categories") and
-                            any(c.get("items") for c in cv["skills"]["categories"]))
+            skills_data = cv.get("skills", {})
+            has_data = bool(
+                skills_data.get("categories") and
+                any(c.get("items") for c in skills_data["categories"])
+            )
         else:
             has_data = bool(cv.get(section))
-        found_in_raw = any(alias in raw for alias in aliases)
+
+        # Only scan raw text if structured data is empty
+        found_in_raw = False
+        if not has_data:
+            found_in_raw = any(alias in raw for alias in aliases)
+
         if has_data or found_in_raw:
             found.append(section)
         else:

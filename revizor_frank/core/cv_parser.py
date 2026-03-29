@@ -254,52 +254,60 @@ _SECTION_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("summary", re.compile(
         r"^\s*(summary|profile|objective|about\s+me|professional\s+summary|"
         r"career\s+objective|career\s+summary|personal\s+statement|executive\s+summary|"
-        r"خلاصة|ملخص|الهدف|نبذة\s*شخصية|ملخص\s*مهني|الغرض)\s*[:\-–_─]*\s*$",
-        re.M)),
+        r"personal\s+information|introduction|"
+        r"خلاصة|ملخص|الهدف|نبذة\s*شخصية|ملخص\s*مهني|الغرض)\s*:?\s*$",
+        re.M | re.I)),
     ("experience", re.compile(
-        r"^\s*(experience|work\s+experience|employment|work\s+history|"
-        r"career\s+history|professional\s+experience|employment\s+history|"
-        r"career\s+experience|relevant\s+experience|"
-        r"الخبرة|الخبرات|الخبرة\s*المهنية|الخبرات\s*المهنية|تاريخ\s*العمل|المسيرة\s*المهنية)\s*[:\-–_─]*\s*$",
-        re.M)),
+        r"^\s*(experience|work\s+experience|working\s+experience|employment|work\s+history|"
+        r"career\s+history|professional\s+experience|professional\s+history|"
+        r"employment\s+history|career\s+experience|relevant\s+experience|"
+        r"الخبرة|الخبرات|الخبرة\s*المهنية|الخبرات\s*المهنية|تاريخ\s*العمل|المسيرة\s*المهنية)\s*:?\s*$",
+        re.M | re.I)),
     ("education", re.compile(
         r"^\s*(education|academic|qualifications|academic\s+background|"
-        r"education\s+[&and]+\s+training|educational\s+background|academic\s+qualifications|"
-        r"التعليم|المؤهلات|المؤهلات\s*الدراسية|الخلفية\s*الأكاديمية|التعليم\s*والتدريب)\s*[:\-–_─]*\s*$",
-        re.M)),
+        r"academic\s+history|educational\s+qualifications|educational\s+background|"
+        r"education\s+(?:&\s*)?and\s+training|academic\s+qualifications|"
+        r"التعليم|المؤهلات|المؤهلات\s*الدراسية|الخلفية\s*الأكاديمية|التعليم\s*والتدريب)\s*:?\s*$",
+        re.M | re.I)),
     ("skills", re.compile(
         r"^\s*(skills|technical\s+skills|core\s+competencies|competencies|"
-        r"expertise|key\s+skills|skills\s+[&and]+\s+competencies|skill\s+set|areas\s+of\s+expertise|"
-        r"المهارات|المهارات\s*الأساسية|المهارات\s*التقنية|الكفاءات|الكفاءات\s*الجوهرية)\s*[:\-–_─]*\s*$",
-        re.M)),
+        r"expertise|key\s+skills|skills\s+(?:&\s*)?and\s+competencies|skill\s+set|"
+        r"areas\s+of\s+expertise|hard\s+skills|soft\s+skills|"
+        r"المهارات|المهارات\s*الأساسية|المهارات\s*التقنية|الكفاءات|الكفاءات\s*الجوهرية)\s*:?\s*$",
+        re.M | re.I)),
     ("certifications", re.compile(
         r"^\s*(certifications?|licenses?|credentials|accreditations?|"
-        r"courses?|training|professional\s+development|certificates?\s+[&and]+\s+licenses?|"
-        r"الشهادات|الدورات|التدريب|الشهادات\s*المهنية|الاعتمادات)\s*[:\-–_─]*\s*$",
-        re.M)),
+        r"professional\s+development|certificates?\s+(?:&\s*)?and\s+licenses?|"
+        r"الشهادات|الشهادات\s*المهنية|الاعتمادات)\s*:?\s*$",
+        re.M | re.I)),
+    ("training", re.compile(
+        r"^\s*(training|professional\s+training|courses?\s+and\s+training|"
+        r"training\s+and\s+development|training\s+and\s+certifications?|"
+        r"courses?|الدورات|التدريب|الدورات\s*التدريبية)\s*:?\s*$",
+        re.M | re.I)),
     ("languages", re.compile(
         r"^\s*(languages?|language\s+skills|linguistic\s+skills|"
-        r"languages?\s+[&and]+\s+communication|spoken\s+languages?|"
+        r"languages?\s+(?:&\s*)?and\s+communication|spoken\s+languages?|"
         r"language\s+proficiencies|language\s+abilities|"
-        r"لغات|اللغات|المهارات\s*اللغوية)\s*[:\-–_─]*\s*$",
-        re.M)),
+        r"لغات|اللغات|المهارات\s*اللغوية)\s*:?\s*$",
+        re.M | re.I)),
     ("projects", re.compile(
         r"^\s*(projects?|personal\s+projects?|key\s+projects?|"
         r"selected\s+projects?|notable\s+projects?|"
-        r"المشاريع|المشاريع\s*الرئيسية)\s*[:\-–_─]*\s*$",
-        re.M)),
+        r"المشاريع|المشاريع\s*الرئيسية)\s*:?\s*$",
+        re.M | re.I)),
     ("publications", re.compile(
-        r"^\s*(publications?|papers?|research|research\s+[&and]+\s+publications?|"
-        r"الأبحاث|المنشورات)\s*[:\-–_─]*\s*$",
-        re.M)),
+        r"^\s*(publications?|papers?|research|research\s+(?:&\s*)?and\s+publications?|"
+        r"الأبحاث|المنشورات)\s*:?\s*$",
+        re.M | re.I)),
     ("awards", re.compile(
-        r"^\s*(awards?|honors?|achievements?|recognitions?|awards?\s+[&and]+\s+honors?|"
-        r"الجوائز|التكريمات|الإنجازات)\s*[:\-–_─]*\s*$",
-        re.M)),
+        r"^\s*(awards?|honors?|achievements?|recognitions?|awards?\s+(?:&\s*)?and\s+honors?|"
+        r"الجوائز|التكريمات|الإنجازات)\s*:?\s*$",
+        re.M | re.I)),
     ("volunteer", re.compile(
         r"^\s*(volunteer|volunteering|community|civic|volunteer\s+experience|"
-        r"التطوع|العمل\s*التطوعي)\s*[:\-–_─]*\s*$",
-        re.M)),
+        r"التطوع|العمل\s*التطوعي)\s*:?\s*$",
+        re.M | re.I)),
 ]
 
 
@@ -737,6 +745,30 @@ def _classify_document(text: str, api_key: str) -> tuple[str, int, int]:
         return "CV", 0, 0  # fail safe — never block a valid CV
 
 
+# ── Training parser ───────────────────────────────────────────────────────────
+
+def _parse_training(text: str) -> list[dict]:
+    """Parse professional training / courses section into structured entries."""
+    if not text:
+        return []
+    entries = []
+    for line in text.splitlines():
+        line = line.strip(" \u2022\u2013\u2014-*·").strip()
+        if not line:
+            continue
+        dates = _DATE_RE.findall(line)
+        date = dates[-1] if dates else ""
+        name_part = _DATE_RE.sub("", line).strip(" \u2013\u2014-|·,")
+        parts = re.split(r"[|,·@\u2014\u2013]", name_part)
+        entries.append({
+            "name": parts[0].strip(),
+            "organisation": parts[1].strip() if len(parts) > 1 else "",
+            "date": date,
+            "description": parts[2].strip() if len(parts) > 2 else "",
+        })
+    return entries
+
+
 # ── Projects parser ───────────────────────────────────────────────────────────
 
 def _parse_projects(text: str) -> list[dict]:
@@ -808,6 +840,7 @@ def parse_cv(
         "education":      _parse_education(sections.get("education", "")),
         "skills":         _parse_skills(sections.get("skills", "")),
         "certifications": _parse_certifications(sections.get("certifications", "")),
+        "training":       _parse_training(sections.get("training", "")),
         "languages":      _parse_languages(sections.get("languages", "")),
         "projects":       _parse_projects(sections.get("projects", "")),
         "raw_text":       raw_text,
