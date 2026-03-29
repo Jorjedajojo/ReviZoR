@@ -28,7 +28,7 @@ try:
     for _k in ("ANTHROPIC_API_KEY", "SECRET_KEY", "API_BASE_URL",
                "APP_USERNAME", "APP_PASSWORD", "SESSION_TIMEOUT_HOURS",
                "ADMIN_USERNAME", "ADMIN_PASSWORD", "USD_TO_EGP_RATE",
-               "SUPABASE_URL", "SUPABASE_ANON_KEY"):
+               "SUPABASE_URL", "SUPABASE_ANON_KEY", "APP_URL"):
         if _k in st.secrets and not os.environ.get(_k):
             os.environ[_k] = str(st.secrets[_k])
 except Exception:
@@ -54,6 +54,7 @@ _ADMIN_USERNAME: str     = os.getenv("ADMIN_USERNAME", "")
 _ADMIN_PASSWORD: str     = os.getenv("ADMIN_PASSWORD", "")
 SESSION_TIMEOUT_HOURS: int = int(os.getenv("SESSION_TIMEOUT_HOURS", "8"))
 USD_TO_EGP_RATE: float   = float(os.getenv("USD_TO_EGP_RATE", "50"))
+APP_URL: str             = os.getenv("APP_URL", "").rstrip("/")
 
 # Pricing
 TIER_PRICES = {
@@ -226,6 +227,11 @@ def _init_state():
         # Review stage
         "review_decisions":       {},   # {key: {label, original, revised, status, text}}
         "review_editing":         [],   # list of section keys currently in edit mode
+        # Accomplishments questions workflow
+        "questions_list":         [],   # [{id, section_key, source_bullet, text}]
+        "questions_generated":    False,
+        "questions_sent":         False,
+        "questions_token":        "",
         # Inline editor
         "edited_cv_text":   "",
         "edited_cv":        None,       # parsed CVData dict after user applies edits
@@ -1114,6 +1120,224 @@ def _cv_section_text(cv: dict, section: str, idx: int = -1) -> str:
     return ""
 
 
+# ── Accomplishments questions helpers ─────────────────────────────────────────
+
+def _extract_approx_items(decisions: dict) -> list[tuple[str, str]]:
+    """Return (section_key, text_fragment) pairs where the AI revised text has ≈."""
+    results = []
+    for key, dec in decisions.items():
+        text = dec.get("text", dec.get("revised", ""))
+        for fragment in re.split(r"[\n•\-–]", text):
+            fragment = fragment.strip()
+            if "≈" in fragment and len(fragment) > 10:
+                results.append((key, fragment))
+    return results
+
+
+def _generate_questions_batch(items: list[tuple[str, str]]) -> list[str]:
+    """Call Claude to turn ≈-bearing bullets into friendly questions. One API call per item."""
+    questions: list[str] = []
+    in_tok = 0
+    out_tok = 0
+    for _key, fragment in items:
+        if not ANTHROPIC_API_KEY:
+            questions.append(
+                f"Can you confirm or provide the actual figure for: "
+                f"{fragment.replace('≈', '').strip()}?"
+            )
+            continue
+        try:
+            import anthropic as _anthropic
+            _client = _anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+            resp = _client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=100,
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        f"This is an estimated accomplishment added to a CV: '{fragment}'. "
+                        "Write a short, friendly question to ask the CV owner to confirm "
+                        "or provide the real figure. Max 1 sentence."
+                    ),
+                }],
+            )
+            questions.append(resp.content[0].text.strip())
+            if resp.usage:
+                in_tok += resp.usage.input_tokens
+                out_tok += resp.usage.output_tokens
+        except Exception:
+            questions.append(
+                f"Can you confirm or provide the actual figure for: "
+                f"{fragment.replace('≈', '').strip()}?"
+            )
+    # Accumulate token usage into cert bucket
+    if in_tok or out_tok:
+        st.session_state.cert_input_tokens  = st.session_state.get("cert_input_tokens",  0) + in_tok
+        st.session_state.cert_output_tokens = st.session_state.get("cert_output_tokens", 0) + out_tok
+    return questions
+
+
+def _ensure_questions_generated():
+    """Generate questions from ≈-bearing content on first call; no-op after."""
+    if st.session_state.get("questions_generated"):
+        return
+    decisions = st.session_state.get("review_decisions", {})
+    items = _extract_approx_items(decisions)
+    if items:
+        with st.spinner("Generating questions from estimated accomplishments…"):
+            generated = _generate_questions_batch(items)
+    else:
+        generated = []
+    questions_list = [
+        {
+            "id": uuid.uuid4().hex[:8],
+            "section_key": key,
+            "source_bullet": fragment,
+            "text": q_text,
+        }
+        for (key, fragment), q_text in zip(items, generated)
+    ]
+    st.session_state.questions_list = questions_list
+    st.session_state.questions_generated = True
+
+
+def _render_questions_for_section(section_key: str):
+    """Render editable question cards for a specific review section."""
+    qs = [q for q in st.session_state.get("questions_list", [])
+          if q["section_key"] == section_key]
+    if not qs:
+        st.caption("_No estimated figures._")
+        return
+    for q in qs:
+        qid = q["id"]
+        chk_key = f"q_chk_{qid}"
+        txt_key = f"q_txt_{qid}"
+        if chk_key not in st.session_state:
+            st.session_state[chk_key] = True
+        if txt_key not in st.session_state:
+            st.session_state[txt_key] = q["text"]
+        st.checkbox("Include", key=chk_key)
+        st.text_area("", key=txt_key, height=80, label_visibility="collapsed")
+
+
+def _render_questions_panel():
+    """Bottom-of-review panel: add questions, send to CV owner."""
+    st.divider()
+    st.markdown("### 📬 Questions for CV Owner")
+
+    questions_list: list[dict] = st.session_state.get("questions_list", [])
+
+    # ── Add manual question ──────────────────────────────────────────────────
+    if st.button("➕ Add question"):
+        new_id = uuid.uuid4().hex[:8]
+        questions_list.append({
+            "id": new_id,
+            "section_key": "manual",
+            "source_bullet": "",
+            "text": "",
+        })
+        st.session_state.questions_list = questions_list
+        st.session_state[f"q_chk_{new_id}"] = True
+        st.session_state[f"q_txt_{new_id}"] = ""
+        st.rerun()
+
+    # Render all questions (flat list)
+    checked_questions = []
+    for q in questions_list:
+        qid = q["id"]
+        chk_key = f"q_chk_{qid}"
+        txt_key = f"q_txt_{qid}"
+        if chk_key not in st.session_state:
+            st.session_state[chk_key] = True
+        if txt_key not in st.session_state:
+            st.session_state[txt_key] = q["text"]
+        col_chk, col_txt = st.columns([1, 9])
+        with col_chk:
+            st.checkbox("", key=chk_key, label_visibility="collapsed")
+        with col_txt:
+            st.text_area("", key=txt_key, height=68, label_visibility="collapsed")
+        if st.session_state[chk_key]:
+            checked_questions.append({
+                "id": qid,
+                "text": st.session_state[txt_key],
+                "source_bullet": q.get("source_bullet", ""),
+            })
+
+    if not checked_questions:
+        st.info("No questions selected. Check boxes above or add a question.")
+        return
+
+    st.caption(f"{len(checked_questions)} question(s) will be sent.")
+
+    # ── Already sent — show link again ───────────────────────────────────────
+    if st.session_state.get("questions_sent") and st.session_state.get("questions_token"):
+        _render_send_channels(st.session_state.questions_token)
+        return
+
+    # ── Send button ──────────────────────────────────────────────────────────
+    if st.button("📤 Send to CV owner", type="primary"):
+        token = uuid.uuid4().hex
+        expires = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+        from revizor_frank.storage import supabase_db as _sdb
+        session_id = str(st.session_state.get("session_id") or "")
+        ok = _sdb.save_owner_questions(
+            session_id=session_id,
+            token=token,
+            questions=checked_questions,
+            expires_at=expires,
+        )
+        if ok:
+            st.session_state.questions_token = token
+            st.session_state.questions_sent  = True
+            st.rerun()
+        else:
+            # Supabase not configured — show copy-link fallback
+            st.session_state.questions_token = token
+            st.session_state.questions_sent  = True
+            st.warning(
+                "Supabase is not configured. The link below will not work until "
+                "SUPABASE_URL and SUPABASE_ANON_KEY are set."
+            )
+            st.rerun()
+
+
+def _render_send_channels(token: str):
+    """Show share channel buttons + copy-link for the owner form."""
+    base = APP_URL or "http://localhost:8501"
+    link = f"{base}/?token={token}"
+    message = (
+        "Hi, I'm reviewing your CV and have a few quick questions to make sure "
+        "everything is accurate. Please click the link below to answer — it only "
+        f"takes a minute: {link}"
+    )
+    import urllib.parse
+    enc_msg  = urllib.parse.quote(message)
+    enc_link = urllib.parse.quote(link)
+    enc_subj = urllib.parse.quote("A few questions about your CV")
+
+    st.success("Questions saved! Share via:")
+    st.code(link, language=None)
+
+    channels = {
+        "WhatsApp":  f"https://wa.me/?text={enc_msg}",
+        "Telegram":  f"https://t.me/share/url?url={enc_link}&text={enc_msg}",
+        "Email":     f"mailto:?subject={enc_subj}&body={enc_msg}",
+        "LinkedIn":  f"https://www.linkedin.com/messaging/compose?body={enc_msg}",
+    }
+    cols = st.columns(len(channels) + 1)
+    for col, (label, url) in zip(cols, channels.items()):
+        with col:
+            st.link_button(label, url, use_container_width=True)
+            # Record preferred channel on first click (best-effort)
+    with cols[-1]:
+        if st.button("📋 Copy link", use_container_width=True):
+            st.write(
+                f"<script>navigator.clipboard.writeText('{link}')</script>",
+                unsafe_allow_html=True,
+            )
+            st.toast("Link copied!")
+
+
 def _init_review_state():
     """Populate review_decisions from parsed_cv (original) vs ai_cv_general (revised).
 
@@ -1197,6 +1421,8 @@ def render_review_changes():
     if not st.session_state.get("review_decisions"):
         _init_review_state()
 
+    _ensure_questions_generated()
+
     decisions: dict = st.session_state.review_decisions
     editing: list   = st.session_state.get("review_editing", [])
     total    = len(decisions)
@@ -1261,7 +1487,7 @@ def render_review_changes():
                         st.rerun()
             else:
                 # ── Diff view ────────────────────────────────────────────────
-                c_orig, c_rev = st.columns(2)
+                c_orig, c_rev, c_q = st.columns(3)
                 with c_orig:
                     st.caption("**Original**")
                     st.markdown(
@@ -1281,6 +1507,9 @@ def render_review_changes():
                         f'{diff or "<em>(empty)</em>"}</div>',
                         unsafe_allow_html=True,
                     )
+                with c_q:
+                    st.caption("**Questions**")
+                    _render_questions_for_section(key)
 
                 c_app, c_edit, _ = st.columns([1, 1, 3])
                 with c_app:
@@ -1295,6 +1524,8 @@ def render_review_changes():
                             editing.append(key)
                         st.session_state.review_editing = editing
                         st.rerun()
+
+    _render_questions_panel()
 
 
 # ── Template selection stage ─────────────────────────────────────────────────
@@ -1559,6 +1790,18 @@ def render_results():
         tab_labels.append(S["tab_linkedin"])
     tab_labels += ["✏️ Edit CV", "🔍 ATS Issues", S["tab_download"]]
 
+    # Owner answers tab — only when submitted answers exist for this session
+    _owner_answers_row = None
+    _session_id_str = str(st.session_state.get("session_id") or "")
+    if _session_id_str:
+        try:
+            from revizor_frank.storage import supabase_db as _sdb
+            _owner_answers_row = _sdb.get_submitted_answers(_session_id_str)
+        except Exception:
+            pass
+    if _owner_answers_row:
+        tab_labels.append("💬 Owner answers")
+
     tabs = st.tabs(tab_labels)
     tab_idx = 0
 
@@ -1605,7 +1848,64 @@ def render_results():
 
     # Download Tab
     with tabs[tab_idx]:
+        tab_idx += 1
         _render_downloads()
+
+    # Owner answers Tab (conditional)
+    if _owner_answers_row:
+        with tabs[tab_idx]:
+            _render_owner_answers_tab(_owner_answers_row)
+
+
+def _render_owner_answers_tab(row: dict):
+    """Show CV owner's answers and allow co-worker to incorporate them into edited_cv."""
+    st.markdown("### 💬 CV Owner Answers")
+    questions = row.get("questions") or []
+    answers   = {a["id"]: a["answer"] for a in (row.get("answers") or []) if a.get("id")}
+
+    ai_cv = st.session_state.ai_cv_general or st.session_state.offline_cv or {}
+
+    for q in questions:
+        if not isinstance(q, dict):
+            continue
+        qid    = q.get("id", "")
+        q_text = q.get("text", "")
+        answer = answers.get(qid, "")
+        bullet = q.get("source_bullet", "")
+
+        st.markdown(f"**Q:** {q_text}")
+        if answer:
+            st.success(f"**A:** {answer}")
+        else:
+            st.caption("_(no answer provided)_")
+
+        if bullet:
+            edit_key = f"owner_edit_{qid}"
+            if edit_key not in st.session_state:
+                st.session_state[edit_key] = bullet
+            st.text_area(
+                "Edit the bullet to incorporate this answer:",
+                key=edit_key,
+                height=80,
+            )
+            if st.button("✅ Save edit", key=f"owner_save_{qid}"):
+                # Inject the edited bullet into edited_cv
+                new_text = st.session_state[edit_key]
+                _apply_owner_bullet_edit(bullet, new_text, ai_cv)
+                st.success("Saved!")
+        st.divider()
+
+
+def _apply_owner_bullet_edit(original_bullet: str, new_bullet: str, ai_cv: dict):
+    """Replace original_bullet with new_bullet in edited_cv (or ai_cv_general)."""
+    import copy
+    base = copy.deepcopy(st.session_state.get("edited_cv") or ai_cv or {})
+    for exp in base.get("experience", []):
+        bullets = exp.get("bullets", [])
+        for i, b in enumerate(bullets):
+            if original_bullet.replace("≈", "").strip() in b:
+                bullets[i] = new_bullet
+    st.session_state.edited_cv = base
 
 
 def _render_cv_preview(cv: dict):
@@ -1757,8 +2057,11 @@ def _render_edit_cv_tab(include_linkedin: bool):
                 if not edited_cv_dict.get(_field) and (cv_source or {}).get(_field):
                     edited_cv_dict[_field] = (cv_source or {})[_field]
             st.session_state.edited_cv = edited_cv_dict
-        except Exception:
+        except Exception as _parse_err:
             st.session_state.edited_cv = None
+            st.warning(f"Could not re-parse edited text: {_parse_err}. Downloads may not reflect edits.")
+
+        st.caption(f"edited_cv set: {bool(st.session_state.get('edited_cv'))}")
 
         if include_linkedin and st.session_state.online and st.session_state.ai_cv_general:
             with st.spinner("Regenerating LinkedIn profile from edited CV…"):
@@ -2097,9 +2400,71 @@ def _build_linkedin_bytes(linkedin_data: dict) -> bytes:
             os.unlink(out_path)
 
 
+# ── CV owner response form (public — no auth) ────────────────────────────────
+
+def render_owner_form(token: str):
+    """Public form for CV owner to answer co-worker questions. No login required."""
+    from revizor_frank.storage import supabase_db as _sdb
+
+    st.markdown("## A few questions about your CV")
+    st.caption("Please answer these quick questions to help your CV editor get everything right.")
+
+    row = _sdb.get_owner_questions(token)
+    if not row:
+        st.error("This link has expired or is invalid.")
+        return
+
+    expires_at = row.get("expires_at")
+    if expires_at:
+        try:
+            exp_dt = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+            if exp_dt < datetime.now(timezone.utc):
+                st.error("This link has expired or is invalid.")
+                return
+        except Exception:
+            pass
+
+    if row.get("status") == "submitted":
+        st.success("You've already submitted your answers. Thank you!")
+        return
+
+    questions = row.get("questions") or []
+    if not questions:
+        st.info("No questions found for this link.")
+        return
+
+    with st.form("owner_answers_form"):
+        answers = []
+        for q in questions:
+            if not isinstance(q, dict):
+                continue
+            q_text = q.get("text", "")
+            if not q_text:
+                continue
+            answer = st.text_area(q_text, key=f"owner_ans_{q.get('id', '')}", height=80)
+            answers.append({"id": q.get("id", ""), "question": q_text, "answer": answer})
+
+        submitted = st.form_submit_button("✅ Submit answers", type="primary")
+        if submitted:
+            ok = _sdb.submit_owner_answers(token, answers)
+            if ok:
+                st.success(
+                    "Thank you! Your answers have been sent to your CV editor."
+                )
+                st.rerun()
+            else:
+                st.error("Could not save answers — please try again.")
+
+
 # ── Main router ───────────────────────────────────────────────────────────────
 
 def main():
+    # ── CV owner response form — public, no auth ──────────────────────────────
+    token = st.query_params.get("token")
+    if token:
+        render_owner_form(token)
+        return
+
     # ── Auth gate: simple username/password mode ──────────────────────────────
     if SIMPLE_AUTH:
         if not _simple_auth_valid():

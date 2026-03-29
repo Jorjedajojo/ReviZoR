@@ -26,6 +26,20 @@ Table schema (run once in your Supabase SQL editor):
     -- ALTER TABLE cv_runs ADD COLUMN IF NOT EXISTS cert_input_tokens INTEGER DEFAULT 0;
     -- ALTER TABLE cv_runs ADD COLUMN IF NOT EXISTS cert_output_tokens INTEGER DEFAULT 0;
     -- ALTER TABLE cv_runs ADD COLUMN IF NOT EXISTS dob VARCHAR(50);
+    -- ALTER TABLE cv_runs ADD COLUMN IF NOT EXISTS preferred_channel VARCHAR(50);
+
+    CREATE TABLE cv_owner_questions (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      session_id TEXT NOT NULL,
+      token TEXT UNIQUE NOT NULL,
+      questions JSONB NOT NULL DEFAULT '[]',
+      answers JSONB,
+      status VARCHAR(20) NOT NULL DEFAULT 'pending',
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      expires_at TIMESTAMPTZ,
+      submitted_at TIMESTAMPTZ
+    );
+    -- If upgrading: CREATE TABLE cv_owner_questions (...) as above.
 
 Pricing model (claude-sonnet-4-6):
   Input:  $3.00 per 1,000,000 tokens
@@ -218,3 +232,102 @@ def get_all_runs_for_export() -> list[dict]:
     except Exception as exc:
         logger.error("Supabase export query failed: %s", exc)
         return []
+
+
+# ── CV owner questions ────────────────────────────────────────────────────────
+
+def save_owner_questions(
+    *,
+    session_id: str,
+    token: str,
+    questions: list[dict],
+    expires_at: str,
+) -> bool:
+    """Store a set of questions for the CV owner. Returns True on success."""
+    client = _get_client()
+    if client is None:
+        return False
+    try:
+        client.table("cv_owner_questions").insert({
+            "session_id": session_id,
+            "token": token,
+            "questions": questions,
+            "status": "pending",
+            "expires_at": expires_at,
+        }).execute()
+        return True
+    except Exception as exc:
+        logger.error("save_owner_questions failed: %s", exc)
+        return False
+
+
+def get_owner_questions(token: str) -> Optional[dict]:
+    """Fetch a cv_owner_questions row by token. Returns None if not found."""
+    client = _get_client()
+    if client is None:
+        return None
+    try:
+        result = (
+            client.table("cv_owner_questions")
+            .select("*")
+            .eq("token", token)
+            .limit(1)
+            .execute()
+        )
+        return result.data[0] if result.data else None
+    except Exception as exc:
+        logger.error("get_owner_questions failed: %s", exc)
+        return None
+
+
+def submit_owner_answers(token: str, answers: list[dict]) -> bool:
+    """Store CV owner's answers and mark row as submitted."""
+    client = _get_client()
+    if client is None:
+        return False
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        client.table("cv_owner_questions").update({
+            "answers": answers,
+            "status": "submitted",
+            "submitted_at": now,
+            "expires_at": now,  # immediately invalidate the link
+        }).eq("token", token).execute()
+        return True
+    except Exception as exc:
+        logger.error("submit_owner_answers failed: %s", exc)
+        return False
+
+
+def get_submitted_answers(session_id: str) -> Optional[dict]:
+    """Return the most recent submitted answers row for a co-worker session."""
+    client = _get_client()
+    if client is None:
+        return None
+    try:
+        result = (
+            client.table("cv_owner_questions")
+            .select("*")
+            .eq("session_id", session_id)
+            .eq("status", "submitted")
+            .order("submitted_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        return result.data[0] if result.data else None
+    except Exception as exc:
+        logger.error("get_submitted_answers failed: %s", exc)
+        return None
+
+
+def update_preferred_channel(session_id: str, channel: str) -> None:
+    """Record the co-worker's preferred share channel on the cv_runs row."""
+    client = _get_client()
+    if client is None:
+        return
+    try:
+        client.table("cv_runs").update(
+            {"preferred_channel": channel}
+        ).eq("session_id", session_id).execute()
+    except Exception as exc:
+        logger.error("update_preferred_channel failed: %s", exc)
