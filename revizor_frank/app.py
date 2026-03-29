@@ -622,11 +622,15 @@ language, optimizes for your target role.
         st.session_state.additional_cv_data = []
         st.session_state.cert_input_tokens = 0
         st.session_state.cert_output_tokens = 0
-        st.session_state.review_decisions = {}
-        st.session_state.review_editing = []
-        st.session_state.edited_cv = None
-        st.session_state.edited_cv_text = ""
-        st.session_state.dob = ""
+        st.session_state.review_decisions   = {}
+        st.session_state.review_editing     = []
+        st.session_state.edited_cv          = None
+        st.session_state.edited_cv_text     = ""
+        st.session_state.dob                = ""
+        st.session_state.questions_list      = []
+        st.session_state.questions_generated = False
+        st.session_state.questions_sent      = False
+        st.session_state.questions_token     = ""
         st.session_state.stage = "upload_certs"
         st.rerun()
 
@@ -1127,7 +1131,7 @@ def _extract_approx_items(decisions: dict) -> list[tuple[str, str]]:
     results = []
     for key, dec in decisions.items():
         text = dec.get("text", dec.get("revised", ""))
-        for fragment in re.split(r"[\n•\-–]", text):
+        for fragment in re.split(r"[\n•\-–—]", text):
             fragment = fragment.strip()
             if "≈" in fragment and len(fragment) > 10:
                 results.append((key, fragment))
