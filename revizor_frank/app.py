@@ -14,6 +14,7 @@ import hashlib
 import hmac
 import io
 import os
+import re
 import tempfile
 import time
 import uuid
@@ -1131,7 +1132,7 @@ def _extract_approx_items(decisions: dict) -> list[tuple[str, str]]:
     results = []
     for key, dec in decisions.items():
         text = dec.get("text", dec.get("revised", ""))
-        for fragment in re.split(r"[\n•\-–—]", text):
+        for fragment in re.split(r"[\n\u2022\-\u2013\u2014]", text):
             fragment = fragment.strip()
             if "≈" in fragment and len(fragment) > 10:
                 results.append((key, fragment))
