@@ -206,6 +206,34 @@ _DOB_RE = re.compile(
     r"|\d{4}[\/\-\.]\d{1,2}[\/\-\.]\d{1,2})",
     re.I,
 )
+
+# Additional DOB patterns: compiled once, tried in order against full raw_text.
+# Covers more label variants, numeric-first and word-first month formats.
+_DOB_PATTERNS: list[re.Pattern] = [
+    # "date of birth / dob / born / birth date : DD MonthName YYYY"
+    re.compile(
+        r"(?:date\s+of\s+birth|dob|born|birth\s+date|تاريخ\s*الميلاد)"
+        r"\s*[:\-\u2013\u2014]?\s*"
+        r"(\d{1,2}[\s\-/\.]\w+[\s\-/\.]\d{2,4})",
+        re.I,
+    ),
+    # "date of birth / dob / born : DD/MM/YYYY or DD-MM-YYYY"
+    re.compile(
+        r"(?:date\s+of\s+birth|dob|born|birth\s+date|تاريخ\s*الميلاد)"
+        r"\s*[:\-\u2013\u2014]?\s*"
+        r"(\d{1,2}[\s\-/\.]\d{1,2}[\s\-/\.]\d{2,4})",
+        re.I,
+    ),
+    # "date of birth / dob / born : MonthName DD, YYYY"
+    re.compile(
+        r"(?:date\s+of\s+birth|dob|born)"
+        r"\s*[:\-\u2013\u2014]?\s*"
+        r"(\w+\s+\d{1,2},?\s+\d{4})",
+        re.I,
+    ),
+    # Bare _DOB_RE (same as above but with the full month-name set)
+    _DOB_RE,
+]
 _ARABIC_RE = re.compile(r"[\u0600-\u06FF\u0750-\u077F]")
 
 
@@ -762,12 +790,15 @@ def parse_cv(
     sections = _split_into_sections(raw_text)
     contact = _extract_contact(sections.get("header", ""))
 
-    # DOB: prefer header extraction; fall back to scanning full text
+    # DOB: prefer header extraction; fall back to scanning full raw_text
+    # with multiple patterns to maximise coverage.
     dob = contact.pop("dob", "")
     if not dob:
-        dob_m = _DOB_RE.search(raw_text)
-        if dob_m:
-            dob = dob_m.group(1).strip()
+        for _pat in _DOB_PATTERNS:
+            _m = _pat.search(raw_text)
+            if _m:
+                dob = _m.group(1).strip()
+                break
 
     cv_data: dict = {
         **contact,

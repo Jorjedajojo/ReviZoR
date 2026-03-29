@@ -1221,7 +1221,7 @@ def _render_questions_for_section(section_key: str):
             st.session_state[chk_key] = True
         if txt_key not in st.session_state:
             st.session_state[txt_key] = q["text"]
-        st.checkbox("Include", key=chk_key)
+        st.checkbox("Send to CV owner", key=chk_key)
         st.text_area("", key=txt_key, height=80, label_visibility="collapsed")
 
 
@@ -1357,6 +1357,14 @@ def _init_review_state():
     _offline  = st.session_state.offline_cv or {}
     original  = _parsed if (_parsed.get("summary") or _parsed.get("experience")) else _offline
     revised   = st.session_state.ai_cv_general or _offline or {}
+
+    # Debug: confirm what parsed_cv actually contains at this point
+    st.caption(
+        f"[debug] parsed_cv keys: {list(_parsed.keys()) if _parsed else 'EMPTY'} | "
+        f"summary present: {bool(_parsed.get('summary'))} | "
+        f"exp entries: {len(_parsed.get('experience', []))} | "
+        f"using: {'parsed_cv' if original is _parsed else 'offline_cv'}"
+    )
 
     decisions: dict = {}
 
