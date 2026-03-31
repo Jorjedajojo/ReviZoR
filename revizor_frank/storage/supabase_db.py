@@ -320,6 +320,40 @@ def get_submitted_answers(session_id: str) -> Optional[dict]:
         return None
 
 
+def get_pending_responses() -> list[dict]:
+    """Return all cv_owner_questions rows that are not yet closed."""
+    client = _get_client()
+    if client is None:
+        return []
+    try:
+        result = (
+            client.table("cv_owner_questions")
+            .select("id, session_id, token, questions, status, created_at, expires_at, submitted_at")
+            .neq("status", "closed")
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return result.data or []
+    except Exception as exc:
+        logger.error("get_pending_responses failed: %s", exc)
+        return []
+
+
+def close_owner_questions(row_id: str) -> bool:
+    """Mark a cv_owner_questions row as closed."""
+    client = _get_client()
+    if client is None:
+        return False
+    try:
+        client.table("cv_owner_questions").update(
+            {"status": "closed"}
+        ).eq("id", row_id).execute()
+        return True
+    except Exception as exc:
+        logger.error("close_owner_questions failed: %s", exc)
+        return False
+
+
 def update_preferred_channel(session_id: str, channel: str) -> None:
     """Record the co-worker's preferred share channel on the cv_runs row."""
     client = _get_client()

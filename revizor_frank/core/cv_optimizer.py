@@ -47,7 +47,10 @@ _CV_SCHEMA = {
         }
     ],
     "skills": {
-        "categories": [{"name": "string", "items": ["string"]}]
+        "categories": [
+            {"name": "Core Competencies", "items": ["skill1", "skill2"]},
+            {"name": "Technical Competencies", "items": ["tool1", "tool2"]},
+        ]
     },
     "certifications": [{"name": "string", "issuer": "string", "date": "string"}],
     "training": [{"name": "string", "organisation": "string", "date": "string", "description": "string"}],
@@ -92,6 +95,7 @@ RULES:
 9. Remove clichés: "team player", "results-driven", "self-starter", "detail-oriented"
 10. NEVER invent experience, companies, or degrees — only enhance what exists
 11. Preserve ALL training entries exactly — do not drop or invent training courses
+12. Always split skills into exactly two categories: "Core Competencies" (soft skills, leadership, management, communication, strategic thinking) and "Technical Competencies" (software, tools, platforms, programming languages, technical methods). Never use other category names.
 
 INPUT CV DATA:
 {json.dumps(cv_data, indent=2)}
@@ -189,8 +193,7 @@ def _call_claude(prompt: str) -> tuple[str, int, int]:
 
 def _preserve_passthrough_fields(result: dict, cv_data: dict) -> None:
     """Copy fields that Claude may omit back into the result dict (in-place)."""
-    # Personal fields that Claude should not change
-    for field in ("dob", "linkedin", "website"):
+    for field in ("dob", "linkedin", "website", "raw_text"):
         if not result.get(field) and cv_data.get(field):
             result[field] = cv_data[field]
     # Training entries — preserve if Claude omits them
@@ -204,7 +207,6 @@ def optimize_general(cv_data: dict) -> tuple[dict, int, int]:
     prompt = _build_general_prompt(cv_data)
     raw, input_tokens, output_tokens = _call_claude(prompt)
     result = _extract_json(raw)
-    result["raw_text"] = cv_data.get("raw_text", "")
     _preserve_passthrough_fields(result, cv_data)
     return result, input_tokens, output_tokens
 
@@ -214,7 +216,6 @@ def optimize_jd_tailored(cv_data: dict, job_description: str, general_cv: dict) 
     prompt = _build_jd_prompt(cv_data, job_description, general_cv)
     raw, input_tokens, output_tokens = _call_claude(prompt)
     result = _extract_json(raw)
-    result["raw_text"] = cv_data.get("raw_text", "")
     _preserve_passthrough_fields(result, cv_data)
     return result, input_tokens, output_tokens
 

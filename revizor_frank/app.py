@@ -233,6 +233,9 @@ def _init_state():
         "questions_generated":    False,
         "questions_sent":         False,
         "questions_token":        "",
+        # Mandatory fields detection
+        "missing_fields":         [],
+        "recommended_missing":    [],
         # Inline editor
         "edited_cv_text":   "",
         "edited_cv":        None,       # parsed CVData dict after user applies edits
@@ -401,6 +404,15 @@ def _check_online() -> bool:
     return is_online()
 
 
+# ── Stage navigation ─────────────────────────────────────────────────────────
+
+def _go_to_stage(stage: str):
+    """Navigate to a stage and push a browser history entry via query params."""
+    st.session_state.stage = stage
+    st.query_params["stage"] = stage
+    st.rerun()
+
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 
 def render_sidebar():
@@ -483,8 +495,7 @@ def render_sidebar():
         if st.session_state.get("user_role") == "admin":
             st.divider()
             if st.button("🛠 Admin Dashboard", use_container_width=True):
-                st.session_state.stage = "admin"
-                st.rerun()
+                _go_to_stage("admin")
 
         st.divider()
         st.caption("ReviZoR FranK — Part of the ReviZoR HR Platform")
@@ -519,8 +530,7 @@ def render_select_service():
             if st.button("Select CV Revision", key="tier_cv_only",
                          use_container_width=True, type="primary"):
                 st.session_state.service_tier = "cv_only"
-                st.session_state.stage = "upload"
-                st.rerun()
+                _go_to_stage("upload")
 
         with tier_col2:
             st.markdown("""
@@ -537,8 +547,7 @@ def render_select_service():
             if st.button("Select CV + LinkedIn", key="tier_cv_linkedin",
                          use_container_width=True, type="primary"):
                 st.session_state.service_tier = "cv_linkedin"
-                st.session_state.stage = "upload"
-                st.rerun()
+                _go_to_stage("upload")
 
         st.markdown("<br>", unsafe_allow_html=True)
         st.divider()
@@ -632,8 +641,34 @@ language, optimizes for your target role.
         st.session_state.questions_generated = False
         st.session_state.questions_sent      = False
         st.session_state.questions_token     = ""
-        st.session_state.stage = "upload_certs"
-        st.rerun()
+        st.session_state.missing_fields      = []
+        st.session_state.recommended_missing = []
+
+        # Pre-flight: quick parse to detect obviously missing fields
+        try:
+            import io as _io
+            from revizor_frank.core import cv_parser as _cvp
+            _quick, _, _ = _cvp.parse_cv(
+                _io.BytesIO(uploaded.getvalue()), uploaded.name,
+                api_key="", check_doc_type=False,
+            )
+            basic_missing = []
+            if not _quick.get("email"):
+                basic_missing.append("professional email address")
+            if not _quick.get("phone"):
+                basic_missing.append("phone number")
+            if not _quick.get("summary") or len((_quick.get("summary") or "").split()) < 10:
+                basic_missing.append("professional summary")
+            if basic_missing:
+                st.info(
+                    f"ℹ️ The following may be missing from this CV: "
+                    f"{', '.join(basic_missing)}. "
+                    "You can proceed — you will be prompted to request this from the client after analysis."
+                )
+        except Exception:
+            pass
+
+        _go_to_stage("upload_certs")
 
 
 # ── Certificate upload stage ──────────────────────────────────────────────────
@@ -781,15 +816,13 @@ def render_upload_certs():
                         item["data"] for item in cv_items
                     ]
                     st.session_state.classified_files = []
-                    st.session_state.stage = "processing"
-                    st.rerun()
+                    _go_to_stage("processing")
                 elif skipped_form:
                     st.session_state.additional_cv_data = [
                         item["data"] for item in cv_items
                     ]
                     st.session_state.classified_files = []
-                    st.session_state.stage = "processing"
-                    st.rerun()
+                    _go_to_stage("processing")
             else:
                 # Only CV files detected — no cert form needed
                 st.markdown("<br>", unsafe_allow_html=True)
@@ -801,12 +834,10 @@ def render_upload_certs():
                             item["data"] for item in cv_items
                         ]
                         st.session_state.classified_files = []
-                        st.session_state.stage = "processing"
-                        st.rerun()
+                        _go_to_stage("processing")
                 with col_back:
                     if st.button("← Back to Upload", use_container_width=True):
-                        st.session_state.stage = "upload"
-                        st.rerun()
+                        _go_to_stage("upload")
 
         # ── Skip entirely (no files classified yet) ────────────────────────────
         if not classified:
@@ -815,12 +846,10 @@ def render_upload_certs():
             with col_proc:
                 if st.button("⏭️ No files to add — Proceed to Optimization",
                              type="primary", use_container_width=True):
-                    st.session_state.stage = "processing"
-                    st.rerun()
+                    _go_to_stage("processing")
             with col_back:
                 if st.button("← Back to Upload", use_container_width=True):
-                    st.session_state.stage = "upload"
-                    st.rerun()
+                    _go_to_stage("upload")
 
     with col_right:
         st.markdown("### What can I upload here?")
@@ -857,8 +886,7 @@ def _run_pipeline():
     filename = st.session_state.get("filename", "cv")
 
     if not cv_bytes:
-        st.session_state.stage = "upload"
-        st.rerun()
+        _go_to_stage("upload")
         return
 
     # Explicit API key check — required for image-based PDF vision fallback
@@ -1039,19 +1067,84 @@ def _run_pipeline():
         status.empty()
         progress.empty()
 
+        # ── Mandatory fields check (run on AI output) ──────────────────────────
+        _check_mandatory_fields()
+
         # Route to review stage when AI ran, otherwise go to template selection
         if st.session_state.get("ai_cv_general"):
             _init_review_state()
-            st.session_state.stage = "review_changes"
+            _go_to_stage("review_changes")
         else:
-            st.session_state.stage = "select_template"
-        st.rerun()
+            _go_to_stage("select_template")
 
     except Exception as e:
         progress.empty()
         status.empty()
         st.session_state.stage = "upload"
         st.error(f"{S['err_parse_failed']} — {e}")
+
+
+# ── Mandatory fields check ───────────────────────────────────────────────────
+
+_MANDATORY_FIELDS = {
+    "name":       "Full name",
+    "email":      "Professional email address",
+    "phone":      "Phone number",
+    "summary":    "Personal profile / professional summary",
+    "experience": "Work experience (at least one role)",
+    "education":  "Education (at least one entry)",
+    "skills":     "Skills (at least one skill listed)",
+}
+
+_RECOMMENDED_FIELDS = {
+    "linkedin": "LinkedIn profile URL",
+}
+
+_MISSING_QUESTIONS = {
+    "Full name": "Could you confirm your full legal name as it should appear on your CV?",
+    "Professional email address": "What is your professional email address?",
+    "Phone number": "What is the best phone number to reach you on?",
+    "Personal profile / professional summary": "Could you describe your professional background and career goals in 3–4 sentences?",
+    "Work experience (at least one role)": "Please list your work history: job title, company name, dates, and main responsibilities for each role.",
+    "Education (at least one entry)": "Please provide your educational background: degree, institution, and graduation year.",
+    "Skills (at least one skill listed)": "What are your key professional skills, tools, and software you use regularly?",
+}
+
+
+def _check_mandatory_fields():
+    """Populate session_state.missing_fields and recommended_missing from ai_cv_general."""
+    cv = st.session_state.get("ai_cv_general") or {}
+    missing = []
+    for field, label in _MANDATORY_FIELDS.items():
+        if field == "name":
+            val = cv.get("name", "")
+            if not val or any(val.lower().startswith(p) for p in
+                              ("address", "tel", "mobile", "phone", "email")):
+                missing.append(label)
+        elif field == "summary":
+            val = cv.get("summary", "")
+            if not val or len(val.split()) < 20:
+                missing.append(label)
+        elif field == "experience":
+            if not cv.get("experience"):
+                missing.append(label)
+        elif field == "education":
+            if not cv.get("education"):
+                missing.append(label)
+        elif field == "skills":
+            cats = cv.get("skills", {}).get("categories", [])
+            if not any(c.get("items") for c in cats):
+                missing.append(label)
+        else:
+            if not cv.get(field, "").strip():
+                missing.append(label)
+
+    recommended_missing = [
+        label for field, label in _RECOMMENDED_FIELDS.items()
+        if not cv.get(field, "").strip()
+    ]
+    st.session_state.missing_fields = missing
+    st.session_state.recommended_missing = recommended_missing
 
 
 # ── Review stage helpers ──────────────────────────────────────────────────────
@@ -1448,6 +1541,39 @@ def render_review_changes():
         "Green = added, ~~red~~ = removed."
     )
 
+    # ── Missing fields banners ────────────────────────────────────────────────
+    if st.session_state.get("missing_fields"):
+        st.warning(
+            "⚠️ The following required information is missing from this CV: "
+            + ", ".join(st.session_state.missing_fields)
+            + ". Use the button below to request it from the client."
+        )
+        if st.button("📤 Request missing info from client", key="req_missing"):
+            auto_questions = [
+                _MISSING_QUESTIONS[f]
+                for f in st.session_state.missing_fields
+                if f in _MISSING_QUESTIONS
+            ]
+            if auto_questions:
+                existing_qs = st.session_state.get("questions_list", [])
+                for q_text in auto_questions:
+                    if not any(q.get("text") == q_text for q in existing_qs):
+                        existing_qs.append({
+                            "id": f"missing_{len(existing_qs)}",
+                            "section_key": "missing_info",
+                            "source_bullet": "",
+                            "text": q_text,
+                        })
+                st.session_state.questions_list = existing_qs
+                st.info("Questions added to the Questions panel below. Use 'Send to CV owner' to dispatch them.")
+                st.rerun()
+
+    if st.session_state.get("recommended_missing"):
+        st.info(
+            "💡 Recommended additions: "
+            + ", ".join(st.session_state.recommended_missing)
+        )
+
     top_left, top_mid, top_right = st.columns([2, 3, 2])
     with top_left:
         if st.button("✅ Approve All Changes", use_container_width=True):
@@ -1460,8 +1586,7 @@ def render_review_changes():
         if st.button("Finalise CV →", type="primary", use_container_width=True,
                      disabled=not all_done):
             st.session_state.ai_cv_general = _apply_review_decisions()
-            st.session_state.stage = "select_template"
-            st.rerun()
+            _go_to_stage("select_template")
 
     if not all_done:
         st.info(f"{total - approved} section(s) pending — approve or edit each one, "
@@ -1625,6 +1750,35 @@ def _generate_template_thumbnail(template_name: str) -> bytes:
         return b""
 
 
+def _render_multipage_preview(cv: dict, template: str, color: str):
+    """Render all pages of a CV as stacked PNG images using PyMuPDF."""
+    import tempfile
+    try:
+        import fitz  # PyMuPDF
+    except ImportError:
+        # Fallback to single-page PNG if fitz not available
+        preview_bytes = _build_export_bytes(cv, "png", template, color)
+        if preview_bytes:
+            st.image(preview_bytes, use_container_width=True)
+        return
+
+    tmp_pdf = tempfile.mktemp(suffix=".pdf")
+    try:
+        from revizor_frank.exporters.pdf_exporter import export_pdf
+        export_pdf(cv, template, tmp_pdf, template_color=color)
+        doc = fitz.open(tmp_pdf)
+        for page_num, page in enumerate(doc):
+            pix = page.get_pixmap(dpi=96)
+            st.image(pix.tobytes("png"), use_container_width=True,
+                     caption=f"Page {page_num + 1}" if len(doc) > 1 else None)
+        doc.close()
+    except Exception as e:
+        st.error(f"Preview failed: {e}")
+    finally:
+        if os.path.exists(tmp_pdf):
+            os.remove(tmp_pdf)
+
+
 def render_select_template():
     """Template & colour selection stage — shown before the download results."""
     st.markdown(f"# 📄 {APP_NAME}")
@@ -1704,15 +1858,7 @@ def render_select_template():
         st.markdown("### 👁️ Live Preview")
         tcolor = st.session_state.get("template_color", "")
         try:
-            preview_bytes = _build_export_bytes(cv_source, "png", selected, tcolor)
-            if preview_bytes:
-                p_col, _ = st.columns([2, 1])
-                with p_col:
-                    st.image(
-                        preview_bytes,
-                        caption=f"Preview: {TEMPLATES[selected]['name']}",
-                        use_container_width=True,
-                    )
+            _render_multipage_preview(cv_source, selected, tcolor)
         except Exception:
             pass
         st.divider()
@@ -1721,15 +1867,13 @@ def render_select_template():
     with col_proceed:
         if st.button("Use This Template — Download My CV →",
                      type="primary", use_container_width=True):
-            st.session_state.stage = "results"
-            st.rerun()
+            _go_to_stage("results")
     with col_back:
         if st.button("← Back", use_container_width=True):
             if st.session_state.get("ai_cv_general"):
-                st.session_state.stage = "review_changes"
+                _go_to_stage("review_changes")
             else:
-                st.session_state.stage = "upload_certs"
-            st.rerun()
+                _go_to_stage("upload_certs")
 
 
 # ── Results stage ─────────────────────────────────────────────────────────────
@@ -2099,6 +2243,38 @@ def _render_edit_cv_tab(include_linkedin: bool):
             st.success("Edits saved — downloads will use your edited CV.")
 
 
+_TC_TEXT = """SERVICE TERMS — ReviZoR CV Revision Service
+
+1. SCOPE OF SERVICE
+   The Service Provider will revise and optimise the submitted CV using AI-assisted tools.
+   The final output depends on the quality and completeness of information provided by the Client.
+
+2. CLIENT RESPONSIBILITIES
+   The Client is responsible for providing all required CV information including:
+   full name, professional email, phone number, work experience, education, and skills.
+   Missing information must be supplied within 14 days of being notified,
+   or the service will be considered rendered at the level possible.
+
+3. RESPONSE WINDOW
+   Once notified of missing information, the Client has 14 days to respond.
+   Failure to respond within this window will result in the service being closed.
+
+4. REFUND & DEPOSIT POLICY
+   If the Client fails to provide required information within the 14-day window,
+   50% of the service fee will be retained by the Service Provider to cover
+   administrative costs and AI processing already performed.
+   The remaining 50% will be refunded to the Client.
+   No refund is issued once the final revised CV has been delivered and approved.
+
+5. CONFIDENTIALITY
+   All CV data is processed securely and is not shared with third parties.
+   Data is retained only for the duration of service delivery.
+
+6. ACCEPTANCE
+   By proceeding with the service, the Client implicitly agrees to these terms.
+"""
+
+
 def render_admin_dashboard():
     import csv
     from io import StringIO
@@ -2106,119 +2282,191 @@ def render_admin_dashboard():
     st.markdown("# 🛠 Admin Dashboard")
     st.divider()
 
-    # ── Month selector ────────────────────────────────────────────────────────
-    now = datetime.now(timezone.utc)
-    col_y, col_m, _ = st.columns([1, 1, 2])
-    with col_y:
-        year = st.selectbox("Year", list(range(now.year - 2, now.year + 1)), index=2)
-    with col_m:
-        month = st.selectbox("Month", list(range(1, 13)), index=now.month - 1,
-                             format_func=lambda m: datetime(2000, m, 1).strftime("%B"))
+    tab_pl, tab_pending, tab_tc = st.tabs(["📊 P&L / Runs", "⏰ Pending Responses", "📋 T&C Draft"])
 
-    st.divider()
+    with tab_pl:
+        # ── Month selector ────────────────────────────────────────────────────
+        now = datetime.now(timezone.utc)
+        col_y, col_m, _ = st.columns([1, 1, 2])
+        with col_y:
+            year = st.selectbox("Year", list(range(now.year - 2, now.year + 1)), index=2)
+        with col_m:
+            month = st.selectbox("Month", list(range(1, 13)), index=now.month - 1,
+                                 format_func=lambda m: datetime(2000, m, 1).strftime("%B"))
 
-    try:
-        from revizor_frank.storage import supabase_db
-        from revizor_frank.storage.supabase_db import calculate_cost
-        runs = supabase_db.get_monthly_runs(year, month)
-    except Exception as e:
-        st.error(f"Could not load Supabase data: {e}")
-        runs = []
-
-    egp_rate = USD_TO_EGP_RATE
-
-    # ── P&L Summary ───────────────────────────────────────────────────────────
-    st.markdown("### Monthly P&L")
-    if runs:
-        total_rev_usd = sum(float(r.get("price_usd") or 0) for r in runs)
-        total_cost_usd = sum(float(r.get("cost_usd") or 0) for r in runs)
-        profit_usd = total_rev_usd - total_cost_usd
-
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Sessions", len(runs))
-        c2.metric("Revenue (USD)", f"${total_rev_usd:,.2f}",
-                  delta=f"EGP {total_rev_usd * egp_rate:,.0f}")
-        c3.metric("AI Cost (USD)", f"${total_cost_usd:,.4f}")
-        c4.metric("Profit (USD)", f"${profit_usd:,.2f}",
-                  delta=f"EGP {profit_usd * egp_rate:,.0f}")
-
-        # Tier breakdown
         st.divider()
-        st.markdown("**Sessions by Tier**")
-        tier_counts: dict[str, int] = {}
-        for r in runs:
-            t = r.get("tier", "unknown")
-            tier_counts[t] = tier_counts.get(t, 0) + 1
-        for t, cnt in tier_counts.items():
-            st.write(f"• {t}: **{cnt}** sessions")
-    else:
-        st.info("No data for the selected period.")
 
-    st.divider()
+        try:
+            from revizor_frank.storage import supabase_db
+            from revizor_frank.storage.supabase_db import calculate_cost
+            runs = supabase_db.get_monthly_runs(year, month)
+        except Exception as e:
+            st.error(f"Could not load Supabase data: {e}")
+            runs = []
 
-    # ── Coupon Manager ────────────────────────────────────────────────────────
-    st.markdown("### Coupon Usage")
-    try:
-        coupon_stats = supabase_db.get_coupon_stats()
-    except Exception:
-        coupon_stats = []
+        egp_rate = USD_TO_EGP_RATE
 
-    if coupon_stats:
-        import pandas as pd  # type: ignore
-        df_coupons = pd.DataFrame(coupon_stats)
-        df_coupons["profit_usd"] = df_coupons["total_revenue_usd"] - df_coupons["total_cost_usd"]
-        st.dataframe(df_coupons, use_container_width=True, hide_index=True)
-    else:
-        st.info("No coupon usage found.")
-
-    st.divider()
-
-    # ── CSV Export ────────────────────────────────────────────────────────────
-    st.markdown("### Export Data")
-    col_exp1, col_exp2 = st.columns(2)
-
-    with col_exp1:
-        # Monthly export
+        # ── P&L Summary ───────────────────────────────────────────────────────
+        st.markdown("### Monthly P&L")
         if runs:
-            buf = StringIO()
+            total_rev_usd = sum(float(r.get("price_usd") or 0) for r in runs)
+            total_cost_usd = sum(float(r.get("cost_usd") or 0) for r in runs)
+            profit_usd = total_rev_usd - total_cost_usd
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Sessions", len(runs))
+            c2.metric("Revenue (USD)", f"${total_rev_usd:,.2f}",
+                      delta=f"EGP {total_rev_usd * egp_rate:,.0f}")
+            c3.metric("AI Cost (USD)", f"${total_cost_usd:,.4f}")
+            c4.metric("Profit (USD)", f"${profit_usd:,.2f}",
+                      delta=f"EGP {profit_usd * egp_rate:,.0f}")
+
+            st.divider()
+            st.markdown("**Sessions by Tier**")
+            tier_counts: dict[str, int] = {}
+            for r in runs:
+                t = r.get("tier", "unknown")
+                tier_counts[t] = tier_counts.get(t, 0) + 1
+            for t, cnt in tier_counts.items():
+                st.write(f"• {t}: **{cnt}** sessions")
+        else:
+            st.info("No data for the selected period.")
+
+        st.divider()
+
+        # ── Coupon Manager ────────────────────────────────────────────────────
+        st.markdown("### Coupon Usage")
+        try:
+            coupon_stats = supabase_db.get_coupon_stats()
+        except Exception:
+            coupon_stats = []
+
+        if coupon_stats:
+            import pandas as pd  # type: ignore
+            df_coupons = pd.DataFrame(coupon_stats)
+            df_coupons["profit_usd"] = df_coupons["total_revenue_usd"] - df_coupons["total_cost_usd"]
+            st.dataframe(df_coupons, use_container_width=True, hide_index=True)
+        else:
+            st.info("No coupon usage found.")
+
+        st.divider()
+
+        # ── CSV Export ────────────────────────────────────────────────────────
+        st.markdown("### Export Data")
+        col_exp1, col_exp2 = st.columns(2)
+
+        with col_exp1:
             if runs:
+                buf = StringIO()
                 writer = csv.DictWriter(buf, fieldnames=runs[0].keys())
                 writer.writeheader()
                 writer.writerows(runs)
-            st.download_button(
-                "⬇️ Export This Month (CSV)",
-                data=buf.getvalue().encode("utf-8"),
-                file_name=f"revizor_runs_{year}_{month:02d}.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
+                st.download_button(
+                    "⬇️ Export This Month (CSV)",
+                    data=buf.getvalue().encode("utf-8"),
+                    file_name=f"revizor_runs_{year}_{month:02d}.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
 
-    with col_exp2:
-        if st.button("Export All Runs (CSV)", use_container_width=True):
-            try:
-                all_runs = supabase_db.get_all_runs_for_export()
-                if all_runs:
-                    buf_all = StringIO()
-                    writer_all = csv.DictWriter(buf_all, fieldnames=all_runs[0].keys())
-                    writer_all.writeheader()
-                    writer_all.writerows(all_runs)
-                    st.download_button(
-                        "⬇️ Download All Runs CSV",
-                        data=buf_all.getvalue().encode("utf-8"),
-                        file_name="revizor_all_runs.csv",
-                        mime="text/csv",
-                        use_container_width=True,
-                        key="dl_all_csv",
-                    )
+        with col_exp2:
+            if st.button("Export All Runs (CSV)", use_container_width=True):
+                try:
+                    all_runs = supabase_db.get_all_runs_for_export()
+                    if all_runs:
+                        buf_all = StringIO()
+                        writer_all = csv.DictWriter(buf_all, fieldnames=all_runs[0].keys())
+                        writer_all.writeheader()
+                        writer_all.writerows(all_runs)
+                        st.download_button(
+                            "⬇️ Download All Runs CSV",
+                            data=buf_all.getvalue().encode("utf-8"),
+                            file_name="revizor_all_runs.csv",
+                            mime="text/csv",
+                            use_container_width=True,
+                            key="dl_all_csv",
+                        )
+                    else:
+                        st.info("No data to export.")
+                except Exception as e:
+                    st.error(f"Export failed: {e}")
+
+    with tab_pending:
+        st.markdown("### Pending CV Owner Responses")
+        st.caption("Deposit policy: 50% retained if client does not respond within 14 days.")
+        try:
+            from revizor_frank.storage import supabase_db as _sdb_admin
+            pending_rows = _sdb_admin.get_pending_responses()
+        except Exception as e:
+            st.error(f"Could not load pending responses: {e}")
+            pending_rows = []
+
+        if not pending_rows:
+            st.info("No pending responses.")
+        else:
+            _now = datetime.now(timezone.utc)
+            for row in pending_rows:
+                status = row.get("status", "pending")
+                created_str = row.get("created_at", "")
+                try:
+                    created_dt = datetime.fromisoformat(created_str.replace("Z", "+00:00"))
+                    days_elapsed = (_now - created_dt).days
+                    days_remaining = max(0, 14 - days_elapsed)
+                except Exception:
+                    days_elapsed = 0
+                    days_remaining = 14
+
+                if status == "submitted":
+                    badge = "✅ Submitted"
+                elif days_remaining == 0:
+                    badge = "🔴 Expired"
+                elif status == "pending":
+                    badge = "🟡 Pending"
                 else:
-                    st.info("No data to export.")
-            except Exception as e:
-                st.error(f"Export failed: {e}")
+                    badge = "⚫ Closed"
+
+                n_questions = len(row.get("questions") or [])
+                with st.expander(
+                    f"{badge} — Session {str(row.get('session_id', ''))[:8]}… "
+                    f"| {n_questions} question(s) | {days_elapsed}d elapsed / {days_remaining}d remaining"
+                ):
+                    st.progress(min(days_elapsed / 14, 1.0))
+                    st.caption(f"Created: {created_str[:10]}  |  Deposit policy: 50% retained if unresponded")
+                    qs = row.get("questions") or []
+                    for i, q in enumerate(qs, 1):
+                        st.write(f"{i}. {q.get('text', q) if isinstance(q, dict) else q}")
+                    if status not in ("submitted", "closed"):
+                        if st.button("Mark as closed", key=f"close_{row['id']}"):
+                            try:
+                                _sdb_admin.close_owner_questions(row["id"])
+                                st.success("Marked as closed.")
+                                st.rerun()
+                            except Exception as ex:
+                                st.error(f"Failed: {ex}")
+
+            # Export pending as CSV
+            if pending_rows:
+                buf_p = StringIO()
+                fieldnames = ["session_id", "status", "created_at", "expires_at",
+                              "submitted_at", "token"]
+                w_p = csv.DictWriter(buf_p, fieldnames=fieldnames, extrasaction="ignore")
+                w_p.writeheader()
+                w_p.writerows(pending_rows)
+                st.download_button(
+                    "⬇️ Export Pending Responses (CSV)",
+                    data=buf_p.getvalue().encode("utf-8"),
+                    file_name="revizor_pending_responses.csv",
+                    mime="text/csv",
+                )
+
+    with tab_tc:
+        st.markdown("### T&C Reference Draft")
+        st.caption("For reference when the service goes public. Not shown to clients yet.")
+        st.code(_TC_TEXT, language=None)
 
     st.divider()
     if st.button("← Back to App", use_container_width=False):
-        st.session_state.stage = "select_service"
-        st.rerun()
+        _go_to_stage("select_service")
 
 
 def _render_ats_issues(ats: dict):
@@ -2545,8 +2793,7 @@ def main():
             render_admin_dashboard()
         else:
             st.error("Access denied.")
-            st.session_state.stage = "select_service"
-            st.rerun()
+            _go_to_stage("select_service")
 
 
 if __name__ == "__main__":

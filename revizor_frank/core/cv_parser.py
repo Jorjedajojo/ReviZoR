@@ -272,7 +272,8 @@ _SECTION_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("skills", re.compile(
         r"^\s*(skills|technical\s+skills|core\s+competencies|competencies|"
         r"expertise|key\s+skills|skills\s+(?:&\s*)?and\s+competencies|skill\s+set|"
-        r"areas\s+of\s+expertise|hard\s+skills|soft\s+skills|"
+        r"areas\s+of\s+expertise|computer\s+skills|it\s+skills|hard\s+skills|"
+        r"soft\s+skills|professional\s+skills|"
         r"المهارات|المهارات\s*الأساسية|المهارات\s*التقنية|الكفاءات|الكفاءات\s*الجوهرية)\s*:?\s*$",
         re.M | re.I)),
     ("certifications", re.compile(
@@ -362,6 +363,12 @@ def _extract_contact(header_text: str) -> dict:
 
     # Name heuristic: longest suitable line in first 5 lines
     # Works for both Latin and Arabic names
+    _SKIP_PREFIXES = (
+        "address", "addr", "telephone", "tel", "mobile", "mob", "phone",
+        "email", "e-mail", "fax", "website", "url", "linkedin",
+        "date of birth", "nationality", "place of birth", "city", "country",
+        "\u0627\u0644\u0639\u0646\u0648\u0627\u0646",  # العنوان
+    )
     name = ""
     contact_tokens = {email, phone, linkedin, website}
     for line in lines[:5]:
@@ -373,6 +380,9 @@ def _extract_contact(header_text: str) -> dict:
             continue
         # Skip DOB lines
         if _DOB_RE.search(line):
+            continue
+        lower = line.lower()
+        if any(lower.startswith(prefix) for prefix in _SKIP_PREFIXES):
             continue
         if len(line) > len(name):
             name = line
@@ -407,52 +417,60 @@ def _extract_contact(header_text: str) -> dict:
 def _parse_experience(text: str) -> list[dict]:
     if not text:
         return []
-    entries = []
-    # Split on blank lines or date-like patterns indicating new entry
-    blocks = re.split(r"\n{2,}", text)
-    for block in blocks:
-        lines = [l.strip() for l in block.splitlines() if l.strip()]
-        if not lines:
+
+    _DATE_RANGE_RE = re.compile(
+        r"((?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+        r"jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|\d{4})"
+        r"[\s.\-/]*(?:\d{2,4})?[\s]*(?:\u2013|-|to)[\s]*"
+        r"(?:present|current|now|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+        r"jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|\d{4})"
+        r"[\s.\-/]*(?:\d{2,4})?)",
+        re.I,
+    )
+
+    lines = text.splitlines()
+    entries: list[dict] = []
+    current: dict | None = None
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
             continue
 
-        title, company, location, start_date, end_date = "", "", "", "", ""
-        bullets = []
+        date_match = _DATE_RANGE_RE.search(stripped)
+        if date_match:
+            if current:
+                entries.append(current)
+            dates = _DATE_RE.findall(stripped)
+            start = dates[0] if dates else ""
+            end = dates[1] if len(dates) > 1 else (
+                "Present" if re.search(r"present|current|now", stripped, re.I) else ""
+            )
+            remainder = _DATE_RE.sub("", stripped).strip(" \u2013-|·,").strip()
+            current = {
+                "title": "",
+                "company": remainder,
+                "location": "",
+                "start_date": start,
+                "end_date": end,
+                "bullets": [],
+            }
+            continue
 
-        for line in lines:
-            if line.startswith(("•", "-", "–", "*", "·")):
-                bullets.append(re.sub(r"^[•\-–*·]\s*", "", line))
-                continue
-            # Try to extract dates
-            dates = _DATE_RE.findall(line)
-            if dates and (len(dates) >= 2 or "present" in line.lower() or "current" in line.lower()):
-                start_date = dates[0] if dates else ""
-                end_date = dates[1] if len(dates) > 1 else ("Present" if "present" in line.lower() else "")
-                # remainder might be title/company
-                remainder = _DATE_RE.sub("", line).strip(" –-|·")
-                if remainder and not title:
-                    parts = re.split(r"[|·,]", remainder)
-                    title = parts[0].strip() if parts else remainder
-                    company = parts[1].strip() if len(parts) > 1 else ""
-                continue
-            if not title:
-                title = line
-            elif not company:
-                company = line
-            elif not location:
-                # Simple location heuristic
-                if any(c.isalpha() for c in line) and len(line) < 50:
-                    location = line
+        if current is None:
+            continue
 
-        if title or bullets:
-            entries.append({
-                "title": title,
-                "company": company,
-                "location": location,
-                "start_date": start_date,
-                "end_date": end_date,
-                "bullets": bullets,
-            })
-    return entries
+        if stripped[:1] in ("\u2022", "\uf0b7", "\u2023", "\u2219", "-", "\u2013", "*") or stripped.startswith("•"):
+            bullet = re.sub(r"^[\u2022\uf0b7\u2023\u2219\u2013\u2014\-\*•]\s*", "", stripped).strip()
+            if bullet and len(bullet) > 5:
+                current["bullets"].append(bullet)
+        elif not current["title"] and stripped:
+            current["title"] = stripped
+
+    if current:
+        entries.append(current)
+
+    return [e for e in entries if e["title"] or e["company"] or e["bullets"]]
 
 
 # ── Education parser ──────────────────────────────────────────────────────────
@@ -752,21 +770,34 @@ def _parse_training(text: str) -> list[dict]:
     if not text:
         return []
     entries = []
-    for line in text.splitlines():
-        line = line.strip(" \u2022\u2013\u2014-*·").strip()
-        if not line:
+    _SKIP_HEADINGS = {"COMPUTER SKILLS", "REFERENCES", "HOBBIES", "LANGUAGE", "LANGUAGES"}
+    blocks = re.split(r"\n{2,}", text.strip())
+    for block in blocks:
+        lines = [
+            l.strip(" \u2022\uf0b7\u2022-\u2013\u2014*\u00b7").strip()
+            for l in block.splitlines()
+            if l.strip(" \u2022\uf0b7\u2022-\u2013\u2014*\u00b7").strip()
+        ]
+        lines = [l for l in lines if len(l) > 3]
+        if not lines:
             continue
-        dates = _DATE_RE.findall(line)
-        date = dates[-1] if dates else ""
-        name_part = _DATE_RE.sub("", line).strip(" \u2013\u2014-|·,")
-        parts = re.split(r"[|,·@\u2014\u2013]", name_part)
+        dates = _DATE_RE.findall(block)
+        date = (
+            f"{dates[0]} \u2013 {dates[1]}" if len(dates) >= 2
+            else (dates[0] if dates else "")
+        )
+        name_line = lines[0] if lines else ""
+        org_line = lines[1] if len(lines) > 1 else ""
+        desc_lines = lines[2:] if len(lines) > 2 else []
+        if any(skip in name_line.upper() for skip in _SKIP_HEADINGS):
+            continue
         entries.append({
-            "name": parts[0].strip(),
-            "organisation": parts[1].strip() if len(parts) > 1 else "",
+            "name": _DATE_RE.sub("", name_line).strip(" ()-"),
+            "organisation": _DATE_RE.sub("", org_line).strip(" ()-") if org_line else "",
             "date": date,
-            "description": parts[2].strip() if len(parts) > 2 else "",
+            "description": " ".join(desc_lines),
         })
-    return entries
+    return [e for e in entries if e["name"] and len(e["name"]) > 3]
 
 
 # ── Projects parser ───────────────────────────────────────────────────────────
