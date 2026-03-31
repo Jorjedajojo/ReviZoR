@@ -1306,22 +1306,22 @@ def _ensure_questions_generated():
 
 
 def _render_questions_for_section(section_key: str):
-    """Render editable question cards for a specific review section."""
+    """Show questions inline in the diff view — read-only, no widgets."""
     qs = [q for q in st.session_state.get("questions_list", [])
           if q["section_key"] == section_key]
     if not qs:
         st.caption("_No estimated figures._")
         return
     for q in qs:
-        qid = q["id"]
-        chk_key = f"q_chk_{qid}"
-        txt_key = f"q_txt_{qid}"
-        if chk_key not in st.session_state:
-            st.session_state[chk_key] = True
-        if txt_key not in st.session_state:
-            st.session_state[txt_key] = q["text"]
-        st.checkbox("Send to CV owner", key=chk_key)
-        st.text_area("", key=txt_key, height=80, label_visibility="collapsed")
+        st.markdown(
+            f'<div style="background:#fffbea;border:1px solid #f0e68c;'
+            f'border-radius:6px;padding:0.5rem 0.75rem;font-size:0.82rem;'
+            f'margin-bottom:0.4rem">'
+            f'❓ {q["text"]}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+    st.caption("_Edit or send below ↓_")
 
 
 def _render_questions_panel():
@@ -1442,6 +1442,17 @@ def _render_send_channels(token: str):
             st.toast("Link copied!")
 
 
+def _clean_for_display(text: str) -> str:
+    """Remove personal info lines that leak into section text."""
+    skip = re.compile(
+        r"^\s*[\u2022\uf0b7•\-]?\s*"
+        r"(date\s+of\s+birth|place\s+of\s+birth|nationality|marital|gender|"
+        r"religion|تاريخ|جنسية|الحالة)[^\n]*",
+        re.I | re.M,
+    )
+    return skip.sub("", text).strip()
+
+
 def _init_review_state():
     """Populate review_decisions from parsed_cv (original) vs ai_cv_general (revised).
 
@@ -1460,7 +1471,7 @@ def _init_review_state():
     decisions: dict = {}
 
     def _add(key, label, section, idx=-1):
-        orig = _cv_section_text(original, section, idx)
+        orig = _clean_for_display(_cv_section_text(original, section, idx))
         rev  = _cv_section_text(revised,  section, idx)
         if rev:  # only add sections that actually have content
             decisions[key] = {

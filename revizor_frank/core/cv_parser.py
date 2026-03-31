@@ -251,10 +251,14 @@ class NonCVDocumentError(ValueError):
 # Trailing :, -, _, – and decorative fill characters are stripped.
 # \s+ inside multi-word headings tolerates extra whitespace from PDF layout.
 _SECTION_PATTERNS: list[tuple[str, re.Pattern]] = [
+    ("personal_info", re.compile(
+        r"^\s*(personal\s+information|personal\s+details|"
+        r"بيانات\s*شخصية|معلومات\s*شخصية)\s*[:\-–_─]?\s*$",
+        re.M | re.I)),
     ("summary", re.compile(
         r"^\s*(summary|profile|objective|about\s+me|professional\s+summary|"
         r"career\s+objective|career\s+summary|personal\s+statement|executive\s+summary|"
-        r"personal\s+information|introduction|"
+        r"introduction|"
         r"خلاصة|ملخص|الهدف|نبذة\s*شخصية|ملخص\s*مهني|الغرض)\s*:?\s*$",
         re.M | re.I)),
     ("experience", re.compile(
