@@ -147,9 +147,12 @@ def render_simple_login():
                         for _key in _restorable:
                             if _saved.get(_key) and not st.session_state.get(_key):
                                 st.session_state[_key] = _saved[_key]
-                        _fn = _saved.get("filename", "your CV")
+                        # NEVER restore stage — always land on select_service
+                        st.session_state.stage = "select_service"
+                        _fn = _saved.get("filename", "a previous CV")
                         st.toast(
-                            f"Welcome back! Previous CV data for '{_fn}' has been pre-loaded."
+                            f"Welcome back! Data from '{_fn}' is pre-loaded. "
+                            "Start a new CV or go to Download to retrieve your last output."
                         )
                 except Exception:
                     pass
@@ -479,12 +482,48 @@ def _can_advance_from(stage: str) -> bool:
     return False
 
 
-def _render_top_nav():
-    """Breadcrumb navigation bar rendered at the top of every stage page."""
-    stage = st.session_state.get("stage", "select_service")
+def _start_over():
+    """Clear all CV state, preserve auth, go to select_service."""
+    keep = (
+        "auth_token", "refresh_token", "auth_user", "auth_expires_at", "auth_error",
+        "simple_auth_ok", "simple_auth_time", "simple_auth_user", "user_role",
+    )
+    auth_keys = {k: st.session_state[k] for k in keep if k in st.session_state}
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
+    st.session_state.update(auth_keys)
+    st.query_params["stage"] = "select_service"
+    st.rerun()
 
+
+def _render_top_nav():
+    """Breadcrumb nav bar — visually pinned to top of content area."""
+    stage = st.session_state.get("stage", "select_service")
     if stage not in _STAGE_ORDER:
         return
+
+    # Inject CSS to make the first block in main content sticky
+    st.markdown("""
+    <style>
+    /* Pin the nav bar to top of the scrollable main area */
+    [data-testid="stMainBlockContainer"] > div:first-child {
+        position: sticky;
+        top: 0;
+        z-index: 999;
+        background-color: white;
+        padding: 0.5rem 0 0.25rem 0;
+        border-bottom: 1px solid #e8e8e8;
+        margin-bottom: 0.5rem;
+    }
+    /* Dark mode */
+    @media (prefers-color-scheme: dark) {
+        [data-testid="stMainBlockContainer"] > div:first-child {
+            background-color: #0e1117;
+            border-bottom: 1px solid #2d2d2d;
+        }
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
     current_idx = _STAGE_ORDER.index(stage)
     total = len(_STAGE_ORDER)
@@ -500,19 +539,20 @@ def _render_top_nav():
                 use_container_width=True,
             ):
                 _go_to_stage(prev)
+        else:
+            st.empty()
 
     with nav_mid:
         steps_html = " › ".join(
-            f"<strong>{_STAGE_LABELS[s]}</strong>" if s == stage
+            f"<strong style='color:#1f77b4'>{_STAGE_LABELS[s]}</strong>" if s == stage
             else f"<span style='color:#aaa'>{_STAGE_LABELS[s]}</span>"
             for s in _STAGE_ORDER
         )
         st.markdown(
-            f"<div style='text-align:center;font-size:0.78rem;padding:6px 0'>{steps_html}</div>",
+            f"<div style='text-align:center;font-size:0.78rem;padding:4px 0'>{steps_html}</div>",
             unsafe_allow_html=True,
         )
-        progress_val = current_idx / (total - 1)
-        st.progress(progress_val)
+        st.progress(current_idx / (total - 1))
 
     with nav_right:
         if current_idx < total - 1:
@@ -528,6 +568,16 @@ def _render_top_nav():
                     if stage == "review_changes":
                         st.session_state.ai_cv_general = _apply_review_decisions()
                     _go_to_stage(next_stage)
+            else:
+                st.empty()
+        else:
+            # On last stage (results) show "New CV" instead of forward
+            if st.button(
+                "＋ New CV",
+                key="topnav_newcv",
+                use_container_width=True,
+            ):
+                _start_over()
 
     st.divider()
 
@@ -599,16 +649,8 @@ def render_sidebar():
                 st.rerun()
 
         st.divider()
-        if st.session_state.stage in ("upload", "results"):
-            if st.button("🔄 Start Over", use_container_width=True):
-                # Preserve auth + role state
-                keep = ("auth_token", "refresh_token", "auth_user", "auth_expires_at", "auth_error",
-                        "simple_auth_ok", "simple_auth_time", "simple_auth_user", "user_role")
-                auth_keys = {k: st.session_state[k] for k in keep if k in st.session_state}
-                for key in list(st.session_state.keys()):
-                    del st.session_state[key]
-                st.session_state.update(auth_keys)
-                st.rerun()
+        if st.button("🔄 New CV", use_container_width=True):
+            _start_over()
 
         # Admin dashboard button (only for admin role)
         if st.session_state.get("user_role") == "admin":
