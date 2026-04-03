@@ -854,6 +854,59 @@ def _parse_projects(text: str) -> list[dict]:
 
 # ── Main parse function ───────────────────────────────────────────────────────
 
+
+def _extract_fallback_summary(raw_text: str) -> str:
+    """Extract first substantial paragraph as summary when no summary heading found."""
+    paragraphs = re.split(r"\n{2,}", raw_text.strip())
+    for para in paragraphs:
+        lines = [l.strip() for l in para.splitlines() if l.strip()]
+        text = " ".join(lines)
+        if len(text.split()) < 15:
+            continue
+        if _EMAIL_RE.search(text) or _PHONE_RE.search(text):
+            continue
+        # Skip all-caps headings
+        if re.match(r"^[A-Z\s]{3,30}$", text.strip()):
+            continue
+        if any(text.lower().startswith(p) for p in (
+            "address", "tel", "mobile", "phone", "email", "date of birth",
+            "nationality", "place of birth",
+        )):
+            continue
+        return text
+    return ""
+
+
+def _parse_experience_blocks(text: str) -> list[dict]:
+    """Simple block-based fallback when date-anchored parser finds nothing."""
+    if not text:
+        return []
+    entries = []
+    blocks = re.split(r"\n{2,}", text.strip())
+    for block in blocks:
+        lines = [l.strip() for l in block.splitlines() if l.strip()]
+        if not lines or len(lines) < 2:
+            continue
+        bullets = []
+        title_line = ""
+        for line in lines:
+            if line[:1] in ("•", "-", "–", "*", "\u2022", "\uf0b7"):
+                bullet = re.sub(r"^[•\-–*\u2022\uf0b7]\s*", "", line).strip()
+                if bullet:
+                    bullets.append(bullet)
+            elif not title_line:
+                title_line = line
+        if title_line or bullets:
+            entries.append({
+                "title": title_line,
+                "company": "",
+                "location": "",
+                "start_date": "",
+                "end_date": "",
+                "bullets": bullets,
+            })
+    return entries
+
 def parse_cv(
     file: BinaryIO,
     filename: str,
@@ -906,6 +959,12 @@ def parse_cv(
         "projects":       _parse_projects(sections.get("projects", "")),
         "raw_text":       raw_text,
     }
+    # Fallback summary: if section splitter found nothing, use first substantial paragraph
+    if not cv_data["summary"]:
+        cv_data["summary"] = _extract_fallback_summary(raw_text)
+    # Fallback experience: if date-anchored parser found nothing, try block-based parse
+    if not cv_data["experience"] and sections.get("experience", "").strip():
+        cv_data["experience"] = _parse_experience_blocks(sections["experience"])
     # Fallback: if no language section was detected, scan raw text for language names
     if not cv_data["languages"] and raw_text:
         cv_data["languages"] = _fallback_language_scan(raw_text)

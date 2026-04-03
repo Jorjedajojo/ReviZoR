@@ -444,17 +444,20 @@ def _go_to_stage(stage: str):
 # ── Navigation helpers ────────────────────────────────────────────────────────
 
 _STAGE_ORDER = [
-    "select_service", "upload", "upload_certs",
-    "review_changes", "full_preview", "select_template", "results",
+    "select_service",
+    "upload",
+    "upload_certs",
+    "review_changes",
+    "select_template",
+    "results",
 ]
 _STAGE_LABELS = {
-    "select_service": "① Service",
-    "upload": "② Upload",
-    "upload_certs": "③ Certificates",
-    "review_changes": "④ Review",
-    "full_preview": "⑤ Preview",
-    "select_template": "⑥ Template",
-    "results": "⑦ Download",
+    "select_service": "Service",
+    "upload": "Upload",
+    "upload_certs": "Certificates",
+    "review_changes": "Review",
+    "select_template": "Template",
+    "results": "Download",
 }
 
 
@@ -471,47 +474,57 @@ def _can_advance_from(stage: str) -> bool:
         return bool(decisions) and all(
             d["status"] in ("approved", "edited") for d in decisions.values()
         )
-    if stage == "full_preview":
-        return True
     if stage == "select_template":
         return True
     return False
 
 
 def _render_top_nav():
-    """Render a fixed-style navigation bar at the top of every stage page."""
+    """Breadcrumb navigation bar rendered at the top of every stage page."""
     stage = st.session_state.get("stage", "select_service")
-    current_idx = _STAGE_ORDER.index(stage) if stage in _STAGE_ORDER else 0
-    progress = current_idx / max(len(_STAGE_ORDER) - 1, 1)
 
-    nav_col1, nav_col2, nav_col3 = st.columns([1, 4, 1])
+    if stage not in _STAGE_ORDER:
+        return
 
-    with nav_col1:
+    current_idx = _STAGE_ORDER.index(stage)
+    total = len(_STAGE_ORDER)
+
+    nav_left, nav_mid, nav_right = st.columns([1, 4, 1])
+
+    with nav_left:
         if current_idx > 0:
-            prev_stage = _STAGE_ORDER[current_idx - 1]
-            if st.button(f"← {_STAGE_LABELS[prev_stage]}",
-                         key=f"nav_back_{stage}", use_container_width=True):
-                _go_to_stage(prev_stage)
+            prev = _STAGE_ORDER[current_idx - 1]
+            if st.button(
+                f"← {_STAGE_LABELS[prev]}",
+                key=f"topnav_back_{stage}",
+                use_container_width=True,
+            ):
+                _go_to_stage(prev)
 
-    with nav_col2:
-        breadcrumb = " › ".join(
-            f"**{_STAGE_LABELS[s]}**" if s == stage else _STAGE_LABELS[s]
+    with nav_mid:
+        steps_html = " › ".join(
+            f"<strong>{_STAGE_LABELS[s]}</strong>" if s == stage
+            else f"<span style='color:#aaa'>{_STAGE_LABELS[s]}</span>"
             for s in _STAGE_ORDER
         )
         st.markdown(
-            f"<div style='text-align:center;font-size:0.78rem;color:#555'>{breadcrumb}</div>",
+            f"<div style='text-align:center;font-size:0.78rem;padding:6px 0'>{steps_html}</div>",
             unsafe_allow_html=True,
         )
-        st.progress(progress)
+        progress_val = current_idx / (total - 1)
+        st.progress(progress_val)
 
-    with nav_col3:
-        if current_idx < len(_STAGE_ORDER) - 1:
+    with nav_right:
+        if current_idx < total - 1:
             next_stage = _STAGE_ORDER[current_idx + 1]
-            can_advance = _can_advance_from(stage)
-            if can_advance:
-                if st.button(f"{_STAGE_LABELS[next_stage]} →",
-                             key=f"nav_fwd_{stage}",
-                             use_container_width=True, type="primary"):
+            can_go = _can_advance_from(stage)
+            if can_go:
+                if st.button(
+                    f"{_STAGE_LABELS[next_stage]} →",
+                    key=f"topnav_fwd_{stage}",
+                    use_container_width=True,
+                    type="primary",
+                ):
                     if stage == "review_changes":
                         st.session_state.ai_cv_general = _apply_review_decisions()
                     _go_to_stage(next_stage)
@@ -1581,6 +1594,14 @@ def _init_review_state():
 
     def _add(key, label, section, idx=-1):
         orig = _clean_for_display(_cv_section_text(original, section, idx))
+        # Last resort for summary: if still empty, pull first non-contact paragraph from raw_text
+        if not orig and section == "summary" and original.get("raw_text"):
+            _email_re = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
+            for _para in re.split(r"\n{2,}", original["raw_text"]):
+                _clean = _para.strip()
+                if len(_clean.split()) >= 10 and not _email_re.search(_clean):
+                    orig = _clean[:400]
+                    break
         rev  = _cv_section_text(revised,  section, idx)
         if rev:  # only add sections that actually have content
             decisions[key] = {
