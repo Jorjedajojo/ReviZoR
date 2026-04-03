@@ -20,8 +20,9 @@ from revizor_frank.config import ANTHROPIC_API_KEY, CLAUDE_MODEL, MAX_TOKENS
 
 _CV_SCHEMA = {
     "name": "string",
+    "title": "string (professional title/designation, e.g. 'Senior Internal Auditor | Finance Professional')",
     "email": "string",
-    "phone": "string",
+    "phone": "string (all phone numbers pipe-separated, e.g. +20123456789 | +447521002142)",
     "location": "string",
     "linkedin": "string",
     "website": "string",
@@ -94,8 +95,10 @@ RULES:
 8. Make every bullet start with a past-tense action verb (present tense for current role)
 9. Remove clichés: "team player", "results-driven", "self-starter", "detail-oriented"
 10. NEVER invent experience, companies, or degrees — only enhance what exists
-11. Preserve ALL training entries exactly — do not drop or invent training courses
+11. Preserve ALL training entries exactly — do not drop or invent training courses. Format each with name, organisation, date, and a one-line description of what was learned.
 12. Always split skills into exactly two categories: "Core Competencies" (soft skills, leadership, management, communication, strategic thinking) and "Technical Competencies" (software, tools, platforms, programming languages, technical methods). Never use other category names.
+13. Preserve the candidate's professional title exactly as given in the "title" field. If no title exists, infer one from their most recent role (e.g. "Senior Internal Auditor | Finance & Risk Professional").
+14. If the CV text contains Arabic script, rewrite all content in Arabic. Preserve Arabic script throughout — do not translate to English.
 
 INPUT CV DATA:
 {json.dumps(cv_data, indent=2)}

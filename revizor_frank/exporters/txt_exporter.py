@@ -13,6 +13,8 @@ def export_txt(cv_data: dict, output_path: str) -> str:
 
     # ── Header ────────────────────────────────────────────────────────────────
     lines.append(cv_data.get("name", "").upper())
+    if cv_data.get("title"):
+        lines.append(cv_data["title"])
     lines.append(_divider())
     contact_parts = []
     for field in ("email", "phone", "location", "linkedin", "website"):

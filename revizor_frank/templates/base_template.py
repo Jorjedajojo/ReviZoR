@@ -232,6 +232,14 @@ class BaseTemplate:
 
         # ── Header ────────────────────────────────────────────────────────────
         story.append(self._safe_para(cv.get("name", ""), ns))
+        if cv.get("title"):
+            title_style = self._ps(
+                fontSize=self.style.body_size + 1,
+                textColor=self.style.secondary_color,
+                leading=14,
+                fontName=self.style.heading_font,
+            )
+            story.append(self._safe_para(cv["title"], title_style))
         contact_line = self._contact_line(cv)
         if contact_line:
             story.append(Paragraph(contact_line, cs))

@@ -55,6 +55,15 @@ def export_docx(cv_data: dict, template_name: str, output_path: str,
     run.font.size = Pt(22)
     _set_run_color(run, primary_hex)
 
+    # ── Professional title line (below name) ─────────────────────────────────
+    if cv_data.get("title"):
+        title_para = doc.add_paragraph()
+        title_run = title_para.add_run(cv_data["title"])
+        title_run.bold = False
+        title_run.italic = True
+        title_run.font.size = Pt(11)
+        _set_run_color(title_run, "444444")
+
     # ── Contact line ──────────────────────────────────────────────────────────
     contact_parts = []
     for field in ("email", "phone", "location", "linkedin", "website"):

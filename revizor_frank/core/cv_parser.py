@@ -259,13 +259,15 @@ _SECTION_PATTERNS: list[tuple[str, re.Pattern]] = [
         r"^\s*(summary|profile|objective|about\s+me|professional\s+summary|"
         r"career\s+objective|career\s+summary|personal\s+statement|executive\s+summary|"
         r"introduction|"
-        r"خلاصة|ملخص|الهدف|نبذة\s*شخصية|ملخص\s*مهني|الغرض)\s*:?\s*$",
+        r"خلاصة|ملخص|الهدف|نبذة\s*شخصية|ملخص\s*مهني|الغرض|نبذة\s*تعريفية|"
+        r"البيانات\s*الشخصية|المؤهلات\s*الشخصية)\s*:?\s*$",
         re.M | re.I)),
     ("experience", re.compile(
         r"^\s*(experience|work\s+experience|working\s+experience|employment|work\s+history|"
         r"career\s+history|professional\s+experience|professional\s+history|"
         r"employment\s+history|career\s+experience|relevant\s+experience|"
-        r"الخبرة|الخبرات|الخبرة\s*المهنية|الخبرات\s*المهنية|تاريخ\s*العمل|المسيرة\s*المهنية)\s*:?\s*$",
+        r"الخبرة|الخبرات|الخبرة\s*المهنية|الخبرات\s*المهنية|تاريخ\s*العمل|المسيرة\s*المهنية|"
+        r"خبرات\s*العمل|سجل\s*العمل)\s*:?\s*$",
         re.M | re.I)),
     ("education", re.compile(
         r"^\s*(education|academic|qualifications|academic\s+background|"
@@ -348,10 +350,8 @@ def _extract_contact(header_text: str) -> dict:
     if em:
         email = em.group(0)
 
-    phone = ""
-    ph = _PHONE_RE.search(header_text)
-    if ph:
-        phone = ph.group(0).strip()
+    all_phones = _PHONE_RE.findall(header_text)
+    phone = " | ".join(p.strip() for p in all_phones if p.strip()) if all_phones else ""
 
     linkedin = ""
     li = _LINKEDIN_RE.search(header_text)
@@ -391,6 +391,24 @@ def _extract_contact(header_text: str) -> dict:
         if len(line) > len(name):
             name = line
 
+    # Title: short professional title on the line immediately after the name
+    title = ""
+    name_idx = next((i for i, l in enumerate(lines[:8]) if l == name), -1)
+    if name_idx >= 0:
+        for candidate in lines[name_idx + 1: name_idx + 4]:
+            c = candidate.strip()
+            if not c:
+                continue
+            if _EMAIL_RE.search(c) or _PHONE_RE.search(c):
+                continue
+            if _DOB_RE.search(c):
+                continue
+            if any(c.lower().startswith(p) for p in _SKIP_PREFIXES):
+                continue
+            if len(c) < 80 and len(c.split()) <= 8:
+                title = c
+                break
+
     # Location: "City, State/Country" for Latin; skip for Arabic (too complex)
     location = ""
     if not _is_arabic(header_text):
@@ -407,6 +425,7 @@ def _extract_contact(header_text: str) -> dict:
 
     return {
         "name": name,
+        "title": title,
         "email": email,
         "phone": phone,
         "location": location,
@@ -551,10 +570,17 @@ _TECHNICAL_SKILL_TOKENS: frozenset[str] = frozenset([
 def _classify_skill_item(item: str) -> str:
     """Return 'core' or 'technical' for a single skill string."""
     lower = item.lower()
-    if any(kw in lower for kw in _TECHNICAL_SKILL_TOKENS):
-        return "technical"
+    # Core takes priority — check it first to avoid false-technical matches
     if any(kw in lower for kw in _CORE_SKILL_TOKENS):
         return "core"
+    # For technical: use word-boundary match for single-char tokens (e.g. "r")
+    for kw in _TECHNICAL_SKILL_TOKENS:
+        if len(kw) == 1:
+            if re.search(r"\b" + re.escape(kw) + r"\b", lower):
+                return "technical"
+        else:
+            if kw in lower:
+                return "technical"
     # Heuristic: all-caps abbreviations or items with symbols look technical
     if re.search(r"\b[A-Z]{2,}\b", item) or re.search(r"[./+#\d]", item):
         return "technical"

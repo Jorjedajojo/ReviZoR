@@ -133,6 +133,26 @@ def render_simple_login():
                 st.session_state.simple_auth_time = datetime.now(timezone.utc)
                 st.session_state.simple_auth_user = username.strip().lower()
                 st.session_state.user_role        = role
+                # Restore previous session data if available
+                try:
+                    from revizor_frank.storage import supabase_db as _sdb
+                    _saved = _sdb.load_session(username.strip().lower())
+                    if _saved:
+                        _restorable = [
+                            "parsed_cv", "ai_cv_general", "offline_cv",
+                            "linkedin_data", "job_description", "service_tier",
+                            "selected_template", "template_color",
+                            "filename", "ats_report",
+                        ]
+                        for _key in _restorable:
+                            if _saved.get(_key) and not st.session_state.get(_key):
+                                st.session_state[_key] = _saved[_key]
+                        _fn = _saved.get("filename", "your CV")
+                        st.toast(
+                            f"Welcome back! Previous CV data for '{_fn}' has been pre-loaded."
+                        )
+                except Exception:
+                    pass
                 st.rerun()
             else:
                 # Small delay to further slow brute-force attempts
@@ -407,10 +427,96 @@ def _check_online() -> bool:
 # ── Stage navigation ─────────────────────────────────────────────────────────
 
 def _go_to_stage(stage: str):
-    """Navigate to a stage and push a browser history entry via query params."""
+    """Navigate to a stage, push browser history, and auto-save session."""
     st.session_state.stage = stage
     st.query_params["stage"] = stage
+    username = (st.session_state.get("simple_auth_user") or
+                (st.session_state.get("auth_user") or {}).get("username", ""))
+    if username:
+        try:
+            from revizor_frank.storage import supabase_db as _sdb
+            _sdb.save_session(username, dict(st.session_state))
+        except Exception:
+            pass
     st.rerun()
+
+
+# ── Navigation helpers ────────────────────────────────────────────────────────
+
+_STAGE_ORDER = [
+    "select_service", "upload", "upload_certs",
+    "review_changes", "full_preview", "select_template", "results",
+]
+_STAGE_LABELS = {
+    "select_service": "① Service",
+    "upload": "② Upload",
+    "upload_certs": "③ Certificates",
+    "review_changes": "④ Review",
+    "full_preview": "⑤ Preview",
+    "select_template": "⑥ Template",
+    "results": "⑦ Download",
+}
+
+
+def _can_advance_from(stage: str) -> bool:
+    """Return True if the user can advance from this stage via the top nav."""
+    if stage == "select_service":
+        return bool(st.session_state.get("service_tier"))
+    if stage == "upload":
+        return bool(st.session_state.get("uploaded_cv_bytes"))
+    if stage == "upload_certs":
+        return True
+    if stage == "review_changes":
+        decisions = st.session_state.get("review_decisions", {})
+        return bool(decisions) and all(
+            d["status"] in ("approved", "edited") for d in decisions.values()
+        )
+    if stage == "full_preview":
+        return True
+    if stage == "select_template":
+        return True
+    return False
+
+
+def _render_top_nav():
+    """Render a fixed-style navigation bar at the top of every stage page."""
+    stage = st.session_state.get("stage", "select_service")
+    current_idx = _STAGE_ORDER.index(stage) if stage in _STAGE_ORDER else 0
+    progress = current_idx / max(len(_STAGE_ORDER) - 1, 1)
+
+    nav_col1, nav_col2, nav_col3 = st.columns([1, 4, 1])
+
+    with nav_col1:
+        if current_idx > 0:
+            prev_stage = _STAGE_ORDER[current_idx - 1]
+            if st.button(f"← {_STAGE_LABELS[prev_stage]}",
+                         key=f"nav_back_{stage}", use_container_width=True):
+                _go_to_stage(prev_stage)
+
+    with nav_col2:
+        breadcrumb = " › ".join(
+            f"**{_STAGE_LABELS[s]}**" if s == stage else _STAGE_LABELS[s]
+            for s in _STAGE_ORDER
+        )
+        st.markdown(
+            f"<div style='text-align:center;font-size:0.78rem;color:#555'>{breadcrumb}</div>",
+            unsafe_allow_html=True,
+        )
+        st.progress(progress)
+
+    with nav_col3:
+        if current_idx < len(_STAGE_ORDER) - 1:
+            next_stage = _STAGE_ORDER[current_idx + 1]
+            can_advance = _can_advance_from(stage)
+            if can_advance:
+                if st.button(f"{_STAGE_LABELS[next_stage]} →",
+                             key=f"nav_fwd_{stage}",
+                             use_container_width=True, type="primary"):
+                    if stage == "review_changes":
+                        st.session_state.ai_cv_general = _apply_review_decisions()
+                    _go_to_stage(next_stage)
+
+    st.divider()
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -504,6 +610,7 @@ def render_sidebar():
 # ── Service selection stage ───────────────────────────────────────────────────
 
 def render_select_service():
+    _render_top_nav()
     st.markdown(f"# 📄 {APP_NAME}")
     st.markdown("*Choose your service before uploading your CV.*")
     st.divider()
@@ -562,6 +669,7 @@ def render_select_service():
 # ── Upload stage ──────────────────────────────────────────────────────────────
 
 def render_upload():
+    _render_top_nav()
     st.markdown(f"# 📄 {APP_NAME}")
     st.markdown(f"*{S['app_tagline']}*")
     st.divider()
@@ -674,6 +782,7 @@ language, optimizes for your target role.
 # ── Certificate upload stage ──────────────────────────────────────────────────
 
 def render_upload_certs():
+    _render_top_nav()
     st.markdown(f"# 📄 {APP_NAME}")
     st.markdown(f"**CV uploaded:** `{st.session_state.filename}`")
     st.divider()
@@ -826,30 +935,20 @@ def render_upload_certs():
             else:
                 # Only CV files detected — no cert form needed
                 st.markdown("<br>", unsafe_allow_html=True)
-                col_proc, col_back = st.columns([2, 1])
-                with col_proc:
-                    if st.button("✅ Confirm & Optimize CV", type="primary",
-                                 use_container_width=True):
-                        st.session_state.additional_cv_data = [
-                            item["data"] for item in cv_items
-                        ]
-                        st.session_state.classified_files = []
-                        _go_to_stage("processing")
-                with col_back:
-                    if st.button("← Back to Upload", use_container_width=True):
-                        _go_to_stage("upload")
+                if st.button("✅ Confirm & Optimize CV", type="primary",
+                             use_container_width=True):
+                    st.session_state.additional_cv_data = [
+                        item["data"] for item in cv_items
+                    ]
+                    st.session_state.classified_files = []
+                    _go_to_stage("processing")
 
         # ── Skip entirely (no files classified yet) ────────────────────────────
         if not classified:
             st.markdown("<br>", unsafe_allow_html=True)
-            col_proc, col_back = st.columns([2, 1])
-            with col_proc:
-                if st.button("⏭️ No files to add — Proceed to Optimization",
-                             type="primary", use_container_width=True):
-                    _go_to_stage("processing")
-            with col_back:
-                if st.button("← Back to Upload", use_container_width=True):
-                    _go_to_stage("upload")
+            if st.button("⏭️ No files to add — Proceed to Optimization",
+                         type="primary", use_container_width=True):
+                _go_to_stage("processing")
 
     with col_right:
         st.markdown("### What can I upload here?")
@@ -1174,54 +1273,64 @@ def _diff_html(old: str, new: str) -> str:
 def _cv_section_text(cv: dict, section: str, idx: int = -1) -> str:
     """Convert one CV section (or entry at idx) to a plain-text string for display/editing."""
     if section == "summary":
-        return cv.get("summary", "")
+        return str(cv.get("summary") or "")
 
     if section == "experience":
-        entries = cv.get("experience", [])
-        if idx < 0 or idx >= len(entries):
+        exps = cv.get("experience", [])
+        if idx < 0 or idx >= len(exps):
             return ""
-        e = entries[idx]
-        lines = [f"{e.get('title', '')} @ {e.get('company', '')}"]
-        dates = f"{e.get('start_date', '')} – {e.get('end_date', 'Present')}"
-        if dates.strip(" –"):
-            lines.append(dates)
+        e = exps[idx]
+        parts = []
+        if e.get("title"):
+            parts.append(e["title"])
+        if e.get("company"):
+            parts.append(e["company"])
+        dates = f"{e.get('start_date', '')} – {e.get('end_date', '')}".strip(" –")
+        if dates:
+            parts.append(dates)
         if e.get("location"):
-            lines.append(e["location"])
-        for b in e.get("bullets", []):
-            lines.append(f"• {b}")
-        return "\n".join(lines)
+            parts.append(e["location"])
+        bullets = e.get("bullets", [])
+        if bullets:
+            parts.append("\n".join(f"• {b}" for b in bullets))
+        return "\n".join(parts)
 
     if section == "education":
-        entries = cv.get("education", [])
-        if idx < 0 or idx >= len(entries):
+        edus = cv.get("education", [])
+        if idx < 0 or idx >= len(edus):
             return ""
-        e = entries[idx]
-        lines = [l for l in [e.get("degree", ""), e.get("institution", ""),
-                              e.get("year", ""), e.get("honors", ""), e.get("gpa", "")] if l]
-        return "\n".join(lines)
+        e = edus[idx]
+        parts = [str(v) for v in [e.get("degree"), e.get("institution"),
+                                   e.get("year"), e.get("honors"), e.get("gpa")] if v]
+        return "\n".join(parts)
 
     if section == "skills":
-        return "\n".join(
-            f"{c['name']}: {', '.join(c.get('items', []))}"
-            for c in cv.get("skills", {}).get("categories", []) if c.get("items")
-        )
+        cats = cv.get("skills", {}).get("categories", [])
+        parts = []
+        for cat in cats:
+            if cat.get("items"):
+                parts.append(f"{cat['name']}: {', '.join(str(i) for i in cat['items'])}")
+        return "\n".join(parts)
 
     if section == "certifications":
+        certs = cv.get("certifications", [])
         return "\n".join(
-            f"• {c.get('name', '')} — {c.get('issuer', '')} ({c.get('date', '')})"
-            for c in cv.get("certifications", []) if c.get("name")
+            f"{c.get('name', '')} — {c.get('issuer', '')} {c.get('date', '')}".strip(" —")
+            for c in certs if c.get("name")
         )
 
     if section == "training":
+        items = cv.get("training", [])
         return "\n".join(
-            f"• {t.get('name', '')} — {t.get('organisation', '')} ({t.get('date', '')})"
-            for t in cv.get("training", []) if t.get("name")
+            f"{t.get('name', '')} — {t.get('organisation', '')} {t.get('date', '')}".strip(" —")
+            for t in items if t.get("name")
         )
 
     if section == "languages":
-        return ", ".join(cv.get("languages", []))
+        langs = cv.get("languages", [])
+        return ", ".join(str(l) for l in langs) if langs else ""
 
-    return ""
+    return str(cv.get(section) or "")
 
 
 # ── Accomplishments questions helpers ─────────────────────────────────────────
@@ -1534,6 +1643,7 @@ def _apply_review_decisions() -> dict:
 
 def render_review_changes():
     """Side-by-side tracked-changes review before final results."""
+    _render_top_nav()
     if not st.session_state.get("review_decisions"):
         _init_review_state()
 
@@ -1597,7 +1707,7 @@ def render_review_changes():
         if st.button("Finalise CV →", type="primary", use_container_width=True,
                      disabled=not all_done):
             st.session_state.ai_cv_general = _apply_review_decisions()
-            _go_to_stage("select_template")
+            _go_to_stage("full_preview")
 
     if not all_done:
         st.info(f"{total - approved} section(s) pending — approve or edit each one, "
@@ -1790,8 +1900,56 @@ def _render_multipage_preview(cv: dict, template: str, color: str):
             os.remove(tmp_pdf)
 
 
+def render_full_preview():
+    """Full CV preview — original vs revised, side by side."""
+    _render_top_nav()
+    st.markdown("## 📄 Full CV Preview — Original vs Revised")
+    st.caption("Review both versions side by side before selecting your template and downloading.")
+
+    original_cv = st.session_state.get("parsed_cv") or {}
+    revised_cv = (
+        st.session_state.get("edited_cv") or
+        st.session_state.get("ai_cv_general") or {}
+    )
+
+    col_orig, col_rev = st.columns(2)
+
+    with col_orig:
+        st.markdown("### Original CV")
+        raw = original_cv.get("raw_text", "")
+        if raw:
+            st.text_area("", value=raw, height=800, disabled=True,
+                         label_visibility="collapsed", key="preview_orig")
+        else:
+            st.info("Original text not available.")
+
+    with col_rev:
+        st.markdown("### Revised CV")
+        from revizor_frank.exporters.txt_exporter import export_txt
+        import tempfile
+        revised_text = ""
+        if revised_cv:
+            with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as _f:
+                _tmp = _f.name
+            try:
+                export_txt(revised_cv, _tmp)
+                with open(_tmp) as _f:
+                    revised_text = _f.read()
+            except Exception:
+                revised_text = ""
+            finally:
+                if os.path.exists(_tmp):
+                    os.remove(_tmp)
+        if revised_text:
+            st.text_area("", value=revised_text, height=800, disabled=True,
+                         label_visibility="collapsed", key="preview_rev")
+        else:
+            st.info("Revised CV not yet available.")
+
+
 def render_select_template():
     """Template & colour selection stage — shown before the download results."""
+    _render_top_nav()
     st.markdown(f"# 📄 {APP_NAME}")
     st.markdown("## Choose Your Template & Colour")
     st.caption("Pick any template, customise the colour, preview with your actual CV, then proceed to download.")
@@ -1874,22 +2032,15 @@ def render_select_template():
             pass
         st.divider()
 
-    col_proceed, col_back = st.columns([2, 1])
-    with col_proceed:
-        if st.button("Use This Template — Download My CV →",
-                     type="primary", use_container_width=True):
-            _go_to_stage("results")
-    with col_back:
-        if st.button("← Back", use_container_width=True):
-            if st.session_state.get("ai_cv_general"):
-                _go_to_stage("review_changes")
-            else:
-                _go_to_stage("upload_certs")
+    if st.button("Use This Template — Download My CV →",
+                 type="primary", use_container_width=True):
+        _go_to_stage("results")
 
 
 # ── Results stage ─────────────────────────────────────────────────────────────
 
 def render_results():
+    _render_top_nav()
     ats = st.session_state.ats_report or {}
     score = ats.get("score", 0)
     grade = ats.get("grade", "—")
@@ -2525,6 +2676,8 @@ def _render_downloads():
     template = st.session_state.selected_template
     template_color = st.session_state.get("template_color", "")
     template_name = TEMPLATES.get(template, {}).get("name", template)
+    cv_used = "edited_cv ✏️" if st.session_state.get("edited_cv") else "ai_cv_general"
+    st.caption(f"Downloads using: **{cv_used}**")
     color_note = f"  ·  colour: <span style='color:{template_color};font-weight:bold'>{template_color}</span>" if template_color else ""
     st.caption(
         f"Template: **{template_name}**  ·  All formats are ATS-safe{color_note}",
@@ -2775,7 +2928,7 @@ def main():
     # ── Sync stage from URL (enables browser back/forward) ───────────────────
     url_stage = st.query_params.get("stage")
     valid_stages = ("select_service", "upload", "upload_certs", "processing",
-                    "review_changes", "select_template", "results")
+                    "review_changes", "full_preview", "select_template", "results")
     if url_stage and url_stage in valid_stages:
         if st.session_state.get("stage") != url_stage:
             st.session_state.stage = url_stage
@@ -2795,6 +2948,8 @@ def main():
         _run_pipeline()
     elif stage == "review_changes":
         render_review_changes()
+    elif stage == "full_preview":
+        render_full_preview()
     elif stage == "select_template":
         render_select_template()
     elif stage == "results":

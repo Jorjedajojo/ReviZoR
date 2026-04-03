@@ -354,6 +354,71 @@ def close_owner_questions(row_id: str) -> bool:
         return False
 
 
+def save_session(username: str, state: dict) -> bool:
+    """Upsert session state for a user in saved_sessions table."""
+    client = _get_client()
+    if client is None:
+        return False
+    try:
+        import json as _json
+        from datetime import datetime, timezone
+
+        def _serializable(v):
+            try:
+                _json.dumps(v)
+                return True
+            except (TypeError, ValueError):
+                return False
+
+        payload = {
+            "username": username,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "stage": state.get("stage"),
+            "filename": state.get("filename"),
+            "parsed_cv": state.get("parsed_cv") if _serializable(state.get("parsed_cv")) else None,
+            "ai_cv_general": state.get("ai_cv_general") if _serializable(state.get("ai_cv_general")) else None,
+            "ai_cv_jd": state.get("ai_cv_jd") if _serializable(state.get("ai_cv_jd")) else None,
+            "offline_cv": state.get("offline_cv") if _serializable(state.get("offline_cv")) else None,
+            "linkedin_data": state.get("linkedin_data") if _serializable(state.get("linkedin_data")) else None,
+            "job_description": state.get("job_description"),
+            "service_tier": state.get("service_tier"),
+            "selected_template": state.get("selected_template"),
+            "template_color": state.get("template_color"),
+            "ats_report": state.get("ats_report") if _serializable(state.get("ats_report")) else None,
+            "missing_fields": state.get("missing_fields"),
+            "session_id": str(state.get("session_id") or ""),
+        }
+        client.table("saved_sessions").upsert(
+            payload, on_conflict="username"
+        ).execute()
+        return True
+    except Exception as e:
+        logger.warning("save_session failed: %s", e)
+        return False
+
+
+def load_session(username: str) -> dict | None:
+    """Load the most recent saved session for a user."""
+    client = _get_client()
+    if client is None:
+        return None
+    try:
+        r = (
+            client.table("saved_sessions")
+            .select("*")
+            .eq("username", username)
+            .order("updated_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if r.data:
+            return r.data[0]
+        return None
+    except Exception as e:
+        logger.warning("load_session failed: %s", e)
+        return None
+
+
 def update_preferred_channel(session_id: str, channel: str) -> None:
     """Record the co-worker's preferred share channel on the cv_runs row."""
     client = _get_client()
