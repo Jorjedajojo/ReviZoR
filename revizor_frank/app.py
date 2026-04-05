@@ -454,6 +454,17 @@ _STAGE_ORDER = [
     "select_template",
     "results",
 ]
+
+# Hardcoded per-stage back destinations (not inferred from _STAGE_ORDER).
+# full_preview sits between review_changes and select_template in the back chain.
+_PREV_STAGE: dict[str, str] = {
+    "upload":          "select_service",
+    "upload_certs":    "upload",
+    "review_changes":  "upload_certs",
+    "full_preview":    "review_changes",
+    "select_template": "full_preview",
+    "results":         "select_template",
+}
 _STAGE_LABELS = {
     "select_service": "Service",
     "upload": "Upload",
@@ -499,10 +510,8 @@ def _start_over():
 def _render_top_nav():
     """Breadcrumb nav bar — visually pinned to top of content area."""
     stage = st.session_state.get("stage", "select_service")
-    if stage not in _STAGE_ORDER:
-        return
 
-    # Inject CSS to make the first block in main content sticky
+    # Inject sticky CSS — works for any stage including full_preview
     st.markdown("""
     <style>
     /* Pin the nav bar to top of the scrollable main area */
@@ -515,7 +524,6 @@ def _render_top_nav():
         border-bottom: 1px solid #e8e8e8;
         margin-bottom: 0.5rem;
     }
-    /* Dark mode */
     @media (prefers-color-scheme: dark) {
         [data-testid="stMainBlockContainer"] > div:first-child {
             background-color: #0e1117;
@@ -525,16 +533,20 @@ def _render_top_nav():
     </style>
     """, unsafe_allow_html=True)
 
-    current_idx = _STAGE_ORDER.index(stage)
+    # Progress bar only makes sense for named stages in _STAGE_ORDER
+    in_order = stage in _STAGE_ORDER
+    current_idx = _STAGE_ORDER.index(stage) if in_order else 0
     total = len(_STAGE_ORDER)
 
     nav_left, nav_mid, nav_right = st.columns([1, 4, 1])
 
     with nav_left:
-        if current_idx > 0:
-            prev = _STAGE_ORDER[current_idx - 1]
+        # Back destination is hardcoded per stage — not inferred from _STAGE_ORDER
+        prev = _PREV_STAGE.get(stage)
+        if prev:
+            prev_label = _STAGE_LABELS.get(prev, prev.replace("_", " ").title())
             if st.button(
-                f"← {_STAGE_LABELS[prev]}",
+                f"← {prev_label}",
                 key=f"topnav_back_{stage}",
                 use_container_width=True,
             ):
@@ -543,16 +555,25 @@ def _render_top_nav():
             st.empty()
 
     with nav_mid:
-        steps_html = " › ".join(
-            f"<strong style='color:#1f77b4'>{_STAGE_LABELS[s]}</strong>" if s == stage
-            else f"<span style='color:#aaa'>{_STAGE_LABELS[s]}</span>"
-            for s in _STAGE_ORDER
-        )
-        st.markdown(
-            f"<div style='text-align:center;font-size:0.78rem;padding:4px 0'>{steps_html}</div>",
-            unsafe_allow_html=True,
-        )
-        st.progress(current_idx / (total - 1))
+        if in_order:
+            steps_html = " › ".join(
+                f"<strong style='color:#1f77b4'>{_STAGE_LABELS[s]}</strong>" if s == stage
+                else f"<span style='color:#aaa'>{_STAGE_LABELS[s]}</span>"
+                for s in _STAGE_ORDER
+            )
+            st.markdown(
+                f"<div style='text-align:center;font-size:0.78rem;padding:4px 0'>{steps_html}</div>",
+                unsafe_allow_html=True,
+            )
+            st.progress(current_idx / (total - 1))
+        else:
+            # full_preview or other intermediate stage — show label only
+            label = stage.replace("_", " ").title()
+            st.markdown(
+                f"<div style='text-align:center;font-size:0.78rem;padding:4px 0;color:#1f77b4'>"
+                f"<strong>{label}</strong></div>",
+                unsafe_allow_html=True,
+            )
 
     with nav_right:
         if current_idx < total - 1:
@@ -1938,33 +1959,153 @@ def _generate_template_thumbnail(template_name: str) -> bytes:
         return b""
 
 
-def _render_multipage_preview(cv: dict, template: str, color: str):
-    """Render all pages of a CV as stacked PNG images using PyMuPDF."""
-    import tempfile
-    try:
-        import fitz  # PyMuPDF
-    except ImportError:
-        # Fallback to single-page PNG if fitz not available
-        preview_bytes = _build_export_bytes(cv, "png", template, color)
-        if preview_bytes:
-            st.image(preview_bytes, use_container_width=True)
-        return
+def _render_cv_html_preview(cv: dict, color: str = ""):
+    """Render CV as styled HTML in a scrollable preview panel.
 
-    tmp_pdf = tempfile.mktemp(suffix=".pdf")
-    try:
-        from revizor_frank.exporters.pdf_exporter import export_pdf
-        export_pdf(cv, template, tmp_pdf, template_color=color)
-        doc = fitz.open(tmp_pdf)
-        for page_num, page in enumerate(doc):
-            pix = page.get_pixmap(dpi=96)
-            st.image(pix.tobytes("png"), use_container_width=True,
-                     caption=f"Page {page_num + 1}" if len(doc) > 1 else None)
-        doc.close()
-    except Exception as e:
-        st.error(f"Preview failed: {e}")
-    finally:
-        if os.path.exists(tmp_pdf):
-            os.remove(tmp_pdf)
+    Uses st.components.v1.html — no PDF generation, no external libraries.
+    Full content is always visible regardless of CV length.
+    """
+    import streamlit.components.v1 as _components
+
+    primary = color or "#1a3a5c"
+
+    def _esc(s: str) -> str:
+        return (str(s)
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;"))
+
+    parts: list[str] = [f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"/>
+<style>
+  body{{font-family:'Segoe UI',Arial,sans-serif;margin:0;padding:1rem 2rem;
+        color:#222;font-size:9.5pt;line-height:1.45;}}
+  h1.nm{{color:{primary};font-size:22pt;margin:0 0 3px 0;}}
+  h2.jt{{color:#555;font-size:11pt;font-weight:normal;font-style:italic;margin:0 0 4px 0;}}
+  .ct{{font-size:8.5pt;color:#555;margin-bottom:12px;}}
+  h3.sh{{color:{primary};font-size:10.5pt;text-transform:uppercase;
+          border-bottom:1.5px solid {primary};margin:16px 0 5px 0;padding-bottom:2px;}}
+  .eh{{font-weight:bold;color:{primary};font-size:10pt;margin-bottom:1px;}}
+  .em{{color:#555;font-size:8.5pt;margin-bottom:4px;}}
+  ul{{margin:3px 0 8px 0;padding-left:18px;}}
+  li{{margin-bottom:2px;}}
+  .tp{{display:inline-block;background:#eef2ff;border:1px solid #c7d2fe;
+        border-radius:3px;padding:1px 5px;margin:2px 1px;font-size:8pt;}}
+</style>
+</head><body>"""]
+
+    # ── Header
+    parts.append(f'<h1 class="nm">{_esc(cv.get("name",""))}</h1>')
+    if cv.get("title"):
+        parts.append(f'<h2 class="jt">{_esc(cv["title"])}</h2>')
+    contact = " | ".join(
+        _esc(cv.get(f, "")) for f in ("email", "phone", "location", "linkedin", "website")
+        if cv.get(f)
+    )
+    if contact:
+        parts.append(f'<div class="ct">{contact}</div>')
+    if cv.get("dob"):
+        parts.append(f'<div class="ct">DOB: {_esc(cv["dob"])}</div>')
+
+    # ── Summary
+    if cv.get("summary"):
+        parts.append('<h3 class="sh">Professional Summary</h3>')
+        parts.append(f'<p>{_esc(cv["summary"])}</p>')
+
+    # ── Experience
+    if cv.get("experience"):
+        parts.append('<h3 class="sh">Professional Experience</h3>')
+        for exp in cv["experience"]:
+            t = _esc(exp.get("title", ""))
+            c = _esc(exp.get("company", ""))
+            loc = _esc(exp.get("location", ""))
+            sd = exp.get("start_date", "")
+            ed = exp.get("end_date", "")
+            dates = _esc(f"{sd} – {ed}".strip(" –")) if (sd or ed) else ""
+            meta = " | ".join(p for p in [c, loc, dates] if p)
+            if t:
+                parts.append(f'<div class="eh">{t}</div>')
+            if meta:
+                parts.append(f'<div class="em">{meta}</div>')
+            bullets = exp.get("bullets", [])
+            if bullets:
+                parts.append("<ul>" + "".join(f"<li>{_esc(b)}</li>" for b in bullets) + "</ul>")
+
+    # ── Education
+    if cv.get("education"):
+        parts.append('<h3 class="sh">Education</h3>')
+        for edu in cv["education"]:
+            deg = _esc(edu.get("degree", ""))
+            inst = _esc(edu.get("institution", ""))
+            yr = _esc(edu.get("year", ""))
+            honors = _esc(edu.get("honors", ""))
+            meta = " | ".join(p for p in [inst, yr] if p)
+            if deg:
+                parts.append(f'<div class="eh">{deg}</div>')
+            if meta:
+                parts.append(f'<div class="em">{meta}</div>')
+            if honors:
+                parts.append(f'<div class="em">{honors}</div>')
+
+    # ── Skills
+    skill_cats = cv.get("skills", {}).get("categories", [])
+    if skill_cats:
+        parts.append('<h3 class="sh">Skills</h3>')
+        for cat in skill_cats:
+            items = cat.get("items", [])
+            if not items:
+                continue
+            cat_name = _esc(cat.get("name", ""))
+            if "technical" in cat.get("name", "").lower():
+                pills = "".join(f'<span class="tp">{_esc(i)}</span>' for i in items)
+                parts.append(f'<div><strong>{cat_name}:</strong><br>{pills}<br></div>')
+            else:
+                parts.append(f'<div><strong>{cat_name}:</strong> {_esc(", ".join(items))}</div>')
+
+    # ── Certifications
+    certs = cv.get("certifications", [])
+    if certs:
+        parts.append('<h3 class="sh">Certifications</h3><ul>')
+        for cert in certs:
+            n = _esc(cert.get("name", ""))
+            iss = _esc(cert.get("issuer", ""))
+            dt = _esc(cert.get("date", ""))
+            meta = " | ".join(p for p in [iss, dt] if p)
+            parts.append(f'<li><strong>{n}</strong>{(" — " + meta) if meta else ""}</li>')
+        parts.append("</ul>")
+
+    # ── Training
+    training = cv.get("training", [])
+    if training:
+        parts.append('<h3 class="sh">Professional Training</h3><ul>')
+        for tr in training:
+            n = _esc(tr.get("name", ""))
+            org = _esc(tr.get("organisation", ""))
+            dt = _esc(tr.get("date", ""))
+            meta = " | ".join(p for p in [org, dt] if p)
+            parts.append(f'<li><strong>{n}</strong>{(" — " + meta) if meta else ""}</li>')
+        parts.append("</ul>")
+
+    # ── Languages
+    langs = cv.get("languages", [])
+    if langs:
+        parts.append('<h3 class="sh">Languages</h3>')
+        parts.append(f'<p>{_esc(", ".join(str(l) for l in langs))}</p>')
+
+    # ── Projects
+    projects = cv.get("projects", [])
+    if projects:
+        parts.append('<h3 class="sh">Projects</h3>')
+        for proj in projects:
+            pn = _esc(proj.get("name", ""))
+            pd = _esc(proj.get("description", ""))
+            if pn:
+                parts.append(f'<div class="eh">{pn}</div>')
+            if pd:
+                parts.append(f'<p style="margin:2px 0 8px 0">{pd}</p>')
+
+    parts.append("</body></html>")
+    _components.html("".join(parts), height=700, scrolling=True)
 
 
 def render_full_preview():
@@ -2093,10 +2234,7 @@ def render_select_template():
     if cv_source:
         st.markdown("### 👁️ Live Preview")
         tcolor = st.session_state.get("template_color", "")
-        try:
-            _render_multipage_preview(cv_source, selected, tcolor)
-        except Exception:
-            pass
+        _render_cv_html_preview(cv_source, tcolor)
         st.divider()
 
     if st.button("Use This Template — Download My CV →",
@@ -2995,13 +3133,9 @@ def main():
             render_login()
             return
 
-    # ── Sync stage from URL (enables browser back/forward) ───────────────────
-    url_stage = st.query_params.get("stage")
-    valid_stages = ("select_service", "upload", "upload_certs", "processing",
-                    "review_changes", "full_preview", "select_template", "results")
-    if url_stage and url_stage in valid_stages:
-        if st.session_state.get("stage") != url_stage:
-            st.session_state.stage = url_stage
+    # URL stage sync intentionally removed — reading the browser URL to set
+    # session state caused browser back to re-route into login. Navigation is
+    # now handled exclusively by _go_to_stage() and the top nav bar buttons.
 
     render_sidebar()
     stage = st.session_state.stage
