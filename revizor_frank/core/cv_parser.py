@@ -391,11 +391,12 @@ def _extract_contact(header_text: str) -> dict:
         if len(line) > len(name):
             name = line
 
-    # Title: short professional title on the line immediately after the name
+    # Title: professional title on the line immediately below the candidate name,
+    # before the contact block. Fallback: first non-empty, non-contact line after name.
     title = ""
     name_idx = next((i for i, l in enumerate(lines[:8]) if l == name), -1)
     if name_idx >= 0:
-        for candidate in lines[name_idx + 1: name_idx + 4]:
+        for candidate in lines[name_idx + 1: name_idx + 5]:
             c = candidate.strip()
             if not c:
                 continue
@@ -403,9 +404,13 @@ def _extract_contact(header_text: str) -> dict:
                 continue
             if _DOB_RE.search(c):
                 continue
+            # Skip lines that are URLs
+            if re.search(r"https?://|www\.", c, re.I):
+                continue
             if any(c.lower().startswith(p) for p in _SKIP_PREFIXES):
                 continue
-            if len(c) < 80 and len(c.split()) <= 8:
+            # Accept up to 12 words and 120 chars — enough for compound titles
+            if len(c) <= 120 and 1 <= len(c.split()) <= 12:
                 title = c
                 break
 

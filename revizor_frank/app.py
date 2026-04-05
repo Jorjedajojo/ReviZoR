@@ -1626,10 +1626,14 @@ def _init_review_state():
     as fallback.  ai_cv_general is always the "revised" side.
     """
     # Use parsed_cv as "original" — it has the unmodified content from the upload.
-    # Fall back to offline_cv if parsed_cv is absent.
+    # Prefer parsed_cv whenever it has any useful content (name or raw_text is
+    # sufficient — do not require summary/experience since those may be empty
+    # for DOCX files that lack section headings).
+    # Fall back to offline_cv only if parsed_cv is entirely absent.
     _parsed   = st.session_state.get("parsed_cv") or {}
     _offline  = st.session_state.offline_cv or {}
-    original  = _parsed if (_parsed.get("summary") or _parsed.get("experience")) else _offline
+    original  = _parsed if (_parsed.get("name") or _parsed.get("raw_text") or
+                            _parsed.get("summary") or _parsed.get("experience")) else _offline
     revised   = st.session_state.ai_cv_general or _offline or {}
 
     decisions: dict = {}
@@ -2428,21 +2432,23 @@ def _render_edit_cv_tab(include_linkedin: bool):
         st.session_state.edited_cv_text = edited
 
         # Parse edited text back to a CVData dict so exports use the edits
+        _edit_ok = False
         try:
             from revizor_frank.core.cv_parser import parse_cv as _parse_cv
             _raw = io.BytesIO(edited.encode("utf-8"))
             edited_cv_dict, _, _ = _parse_cv(_raw, "edited_cv.txt",
                                              api_key="", check_doc_type=False)
             # Preserve fields not reconstructable from plain text
-            for _field in ("dob", "linkedin", "website"):
+            for _field in ("title", "dob", "linkedin", "website", "raw_text"):
                 if not edited_cv_dict.get(_field) and (cv_source or {}).get(_field):
                     edited_cv_dict[_field] = (cv_source or {})[_field]
             st.session_state.edited_cv = edited_cv_dict
+            _edit_ok = True
         except Exception as _parse_err:
             st.session_state.edited_cv = None
-            st.warning(f"Could not re-parse edited text: {_parse_err}. Downloads may not reflect edits.")
+            st.error(f"Could not save edits: {_parse_err}. Please check your CV text format.")
 
-        if include_linkedin and st.session_state.online and st.session_state.ai_cv_general:
+        if _edit_ok and include_linkedin and st.session_state.online and st.session_state.ai_cv_general:
             with st.spinner("Regenerating LinkedIn profile from edited CV…"):
                 try:
                     from revizor_frank.core import cv_optimizer
@@ -2459,12 +2465,13 @@ def _render_edit_cv_tab(include_linkedin: bool):
                     st.session_state.total_output_tokens = (
                         st.session_state.get("total_output_tokens", 0) + out_tok
                     )
-                    st.success("LinkedIn profile refreshed from your edits.")
+                    st.success("Edits saved — LinkedIn profile refreshed.")
                 except Exception as e:
                     st.error(f"Could not regenerate LinkedIn: {e}")
-        elif include_linkedin and not st.session_state.online:
+        elif _edit_ok and include_linkedin and not st.session_state.online:
+            st.success("Edits saved — downloads will use your edited CV.")
             st.info("LinkedIn refresh requires internet connection.")
-        else:
+        elif _edit_ok:
             st.success("Edits saved — downloads will use your edited CV.")
 
 
