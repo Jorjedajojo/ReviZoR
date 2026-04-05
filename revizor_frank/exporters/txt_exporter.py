@@ -17,7 +17,16 @@ def export_txt(cv_data: dict, output_path: str) -> str:
         lines.append(cv_data["title"])
     lines.append(_divider())
     contact_parts = []
-    for field in ("email", "phone", "location", "linkedin", "website"):
+    if cv_data.get("email"):
+        contact_parts.append(cv_data["email"])
+    # phones: prefer list; fall back to splitting the joined string
+    _phones = cv_data.get("phones") or (
+        [p.strip() for p in cv_data["phone"].split("|") if p.strip()]
+        if cv_data.get("phone") else []
+    )
+    if _phones:
+        contact_parts.append(" | ".join(_phones))
+    for field in ("location", "linkedin", "website"):
         val = cv_data.get(field, "")
         if val:
             contact_parts.append(val)

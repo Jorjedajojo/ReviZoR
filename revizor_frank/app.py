@@ -839,7 +839,11 @@ language, optimizes for your target role.
             basic_missing = []
             if not _quick.get("email"):
                 basic_missing.append("professional email address")
-            if not _quick.get("phone"):
+            _qphones = _quick.get("phones") or (
+                [p.strip() for p in _quick["phone"].split("|") if p.strip()]
+                if _quick.get("phone") else []
+            )
+            if not _qphones:
                 basic_missing.append("phone number")
             if not _quick.get("summary") or len((_quick.get("summary") or "").split()) < 10:
                 basic_missing.append("professional summary")
@@ -1309,6 +1313,14 @@ def _check_mandatory_fields():
         elif field == "skills":
             cats = cv.get("skills", {}).get("categories", [])
             if not any(c.get("items") for c in cats):
+                missing.append(label)
+        elif field == "phone":
+            # phones is the list; phone is the backward-compat joined string
+            phones = cv.get("phones") or (
+                [p.strip() for p in cv["phone"].split("|") if p.strip()]
+                if cv.get("phone") else []
+            )
+            if not phones:
                 missing.append(label)
         else:
             if not cv.get(field, "").strip():
@@ -1998,12 +2010,20 @@ def _render_cv_html_preview(cv: dict, color: str = ""):
     parts.append(f'<h1 class="nm">{_esc(cv.get("name",""))}</h1>')
     if cv.get("title"):
         parts.append(f'<h2 class="jt">{_esc(cv["title"])}</h2>')
-    contact = " | ".join(
-        _esc(cv.get(f, "")) for f in ("email", "phone", "location", "linkedin", "website")
-        if cv.get(f)
+    _html_phones = cv.get("phones") or (
+        [p.strip() for p in cv["phone"].split("|") if p.strip()]
+        if cv.get("phone") else []
     )
-    if contact:
-        parts.append(f'<div class="ct">{contact}</div>')
+    contact_items = []
+    if cv.get("email"):
+        contact_items.append(_esc(cv["email"]))
+    if _html_phones:
+        contact_items.append(_esc(" | ".join(_html_phones)))
+    for _f in ("location", "linkedin", "website"):
+        if cv.get(_f):
+            contact_items.append(_esc(cv[_f]))
+    if contact_items:
+        parts.append(f'<div class="ct">{" | ".join(contact_items)}</div>')
     if cv.get("dob"):
         parts.append(f'<div class="ct">DOB: {_esc(cv["dob"])}</div>')
 

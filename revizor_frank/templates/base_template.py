@@ -194,7 +194,16 @@ class BaseTemplate:
 
     def _contact_line(self, cv: dict) -> str:
         parts = []
-        for field in ("email", "phone", "location", "linkedin", "website"):
+        if cv.get("email"):
+            parts.append(cv["email"])
+        # phones: prefer list; fall back to splitting the joined string
+        phones = cv.get("phones") or (
+            [p.strip() for p in cv["phone"].split("|") if p.strip()]
+            if cv.get("phone") else []
+        )
+        if phones:
+            parts.append(" | ".join(phones))
+        for field in ("location", "linkedin", "website"):
             if cv.get(field):
                 parts.append(cv[field])
         if cv.get("dob"):

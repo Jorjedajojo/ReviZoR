@@ -180,9 +180,11 @@ def extract_text(file: BinaryIO, filename: str, api_key: str = "") -> tuple[str,
 
 _EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
 _PHONE_RE = re.compile(
-    r"(?:\+?\d{1,3}[\s\-.]?)?"
-    r"(?:\(?\d{2,4}\)?[\s\-.]?)?"
-    r"\d{3,4}[\s\-.]?\d{3,4}"
+    r"(?:\+\d{1,3}[\s.\-]?)?"           # optional country code: +20, +44
+    r"(?:\(?\d{2,4}\)?[\s.\-]?)?"       # optional area code: (012), 012
+    r"\d{2,4}[\s.\-]?\d{3,4}"           # main block: 012 345 or 0123 4567
+    r"(?:[\s.\-]?\d{3,4})?"             # optional trailing block
+    r"(?:[\s.\-]?\d{3,4})?"             # optional further trailing block
 )
 _LINKEDIN_RE = re.compile(r"(?:linkedin\.com/in/|linkedin:\s*)([A-Za-z0-9\-]+)", re.I)
 _URL_RE = re.compile(r"https?://[^\s]+")
@@ -350,8 +352,20 @@ def _extract_contact(header_text: str) -> dict:
     if em:
         email = em.group(0)
 
-    all_phones = _PHONE_RE.findall(header_text)
-    phone = " | ".join(p.strip() for p in all_phones if p.strip()) if all_phones else ""
+    # Collect all phone numbers; deduplicate by normalised digit sequence
+    _seen_digits: set[str] = set()
+    phones: list[str] = []
+    for _raw_ph in _PHONE_RE.findall(header_text):
+        _p = _raw_ph.strip()
+        if not _p:
+            continue
+        _digits = re.sub(r"\D", "", _p)
+        if len(_digits) < 7 or len(_digits) > 15:
+            continue
+        if _digits not in _seen_digits:
+            _seen_digits.add(_digits)
+            phones.append(_p)
+    phone = " | ".join(phones)   # joined string for backward compatibility
 
     linkedin = ""
     li = _LINKEDIN_RE.search(header_text)
@@ -432,7 +446,8 @@ def _extract_contact(header_text: str) -> dict:
         "name": name,
         "title": title,
         "email": email,
-        "phone": phone,
+        "phones": phones,            # list — primary; one item per unique number
+        "phone": phone,              # joined string — backward-compat for optimizer/templates
         "location": location,
         "linkedin": linkedin,
         "website": website,
