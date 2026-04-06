@@ -236,13 +236,22 @@ _DOB_PATTERNS: list[re.Pattern] = [
     # Bare _DOB_RE (same as above but with the full month-name set)
     _DOB_RE,
 ]
-_ARABIC_RE = re.compile(r"[\u0600-\u06FF\u0750-\u077F]")
+_ARABIC_RE = re.compile(r"[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]")
 
 
 def _is_arabic(text: str) -> bool:
     """Return True if the text contains significant Arabic script."""
     arabic_chars = sum(1 for c in text if _ARABIC_RE.match(c))
     return arabic_chars > 10
+
+
+def _is_arabic_dominant(text: str) -> bool:
+    """Return True if >30% of non-whitespace characters are Arabic script."""
+    chars = [c for c in text if not c.isspace()]
+    if not chars:
+        return False
+    arabic_count = sum(1 for c in chars if _ARABIC_RE.match(c))
+    return arabic_count / len(chars) > 0.30
 
 
 class NonCVDocumentError(ValueError):
@@ -927,6 +936,160 @@ def _parse_experience_blocks(text: str) -> list[dict]:
             })
     return entries
 
+def _extract_arabic_cv_via_claude(
+    pdf_bytes: bytes,
+    arabic_raw_text: str,
+    api_key: str,
+) -> tuple[dict, int, int]:
+    """Call Claude to extract and translate an Arabic PDF CV into structured English CVData.
+
+    Returns (cv_data dict, input_tokens, output_tokens).
+    Uses the same key structure as the English parse path — no separate keys.
+    """
+    import json
+
+    try:
+        import streamlit as _st
+        _st.toast("🌐 Arabic CV detected — using Claude to extract and translate…", icon="🔤")
+    except Exception:
+        pass
+
+    b64 = base64.standard_b64encode(pdf_bytes).decode()
+    client = anthropic.Anthropic(api_key=api_key)
+
+    prompt = (
+        "This CV/resume is written in Arabic. "
+        "Extract all information and return it translated into English as a valid JSON object. "
+        "Use EXACTLY these keys (omit keys that have no data — do not set empty strings or empty lists "
+        "unless genuinely empty):\n\n"
+        "{\n"
+        '  "name": "Full name in English (transliterate if needed)",\n'
+        '  "title": "Professional title in English",\n'
+        '  "email": "email address",\n'
+        '  "phones": ["phone number 1", "phone number 2"],\n'
+        '  "location": "City, Country in English",\n'
+        '  "linkedin": "linkedin URL or username",\n'
+        '  "website": "website URL",\n'
+        '  "dob": "date of birth",\n'
+        '  "nationality": "nationality in English",\n'
+        '  "summary": "Professional summary translated into fluent English",\n'
+        '  "experience": [\n'
+        '    {\n'
+        '      "title": "Job title in English",\n'
+        '      "company": "Company name",\n'
+        '      "location": "City",\n'
+        '      "start_date": "Month Year",\n'
+        '      "end_date": "Month Year or Present",\n'
+        '      "bullets": ["Key achievement or responsibility in English"]\n'
+        '    }\n'
+        '  ],\n'
+        '  "education": [\n'
+        '    {\n'
+        '      "degree": "Degree name in English",\n'
+        '      "institution": "Institution name",\n'
+        '      "location": "City",\n'
+        '      "year": "Graduation year",\n'
+        '      "gpa": "",\n'
+        '      "honors": ""\n'
+        '    }\n'
+        '  ],\n'
+        '  "skills_core": ["Core competency 1", "Core competency 2"],\n'
+        '  "skills_technical": ["Tool or technology 1", "Tool or technology 2"],\n'
+        '  "training": [\n'
+        '    {"name": "Course name in English", "organisation": "Provider", "date": "Year", "description": ""}\n'
+        '  ],\n'
+        '  "languages": ["Arabic (Native)", "English (Fluent)"],\n'
+        '  "certifications": [\n'
+        '    {"name": "Certificate name in English", "issuer": "Issuing body", "date": "Year"}\n'
+        '  ]\n'
+        "}\n\n"
+        "Return ONLY the JSON object — no markdown fences, no explanation, no surrounding text."
+    )
+
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=4096,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "document",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "application/pdf",
+                            "data": b64,
+                        },
+                    },
+                    {"type": "text", "text": prompt},
+                ],
+            }],
+        )
+    except Exception as exc:
+        try:
+            import streamlit as _st
+            _st.warning(f"Arabic CV extraction failed: {exc} — falling back to raw text parse.")
+        except Exception:
+            pass
+        raise
+
+    in_tok  = response.usage.input_tokens  if response.usage else 0
+    out_tok = response.usage.output_tokens if response.usage else 0
+    raw_json = response.content[0].text.strip()
+
+    # Strip markdown code fences if model added them anyway
+    raw_json = re.sub(r"^```(?:json)?\s*", "", raw_json)
+    raw_json = re.sub(r"\s*```$", "", raw_json)
+
+    try:
+        data = json.loads(raw_json)
+    except json.JSONDecodeError:
+        # Best-effort: find first {...} block
+        m = re.search(r"\{.*\}", raw_json, re.DOTALL)
+        data = json.loads(m.group(0)) if m else {}
+
+    # Normalise phones
+    phones = data.get("phones") or []
+    if isinstance(phones, str):
+        phones = [p.strip() for p in phones.split("|") if p.strip()]
+    phone = " | ".join(phones)
+
+    # Build skills dict from skills_core / skills_technical (same structure as English path)
+    skills_core = data.get("skills_core") or []
+    skills_tech  = data.get("skills_technical") or []
+    categories = []
+    if skills_tech:
+        categories.append({"name": "Technical Competencies", "items": skills_tech})
+    if skills_core:
+        categories.append({"name": "Core Competencies", "items": skills_core})
+    if not categories:
+        categories = [{"name": "Skills", "items": []}]
+    skills = {"categories": categories}
+
+    cv_data: dict = {
+        "name":           data.get("name", ""),
+        "title":          data.get("title", ""),
+        "email":          data.get("email", ""),
+        "phones":         phones,
+        "phone":          phone,
+        "location":       data.get("location", ""),
+        "linkedin":       data.get("linkedin", ""),
+        "website":        data.get("website", ""),
+        "dob":            data.get("dob", ""),
+        "nationality":    data.get("nationality", ""),
+        "summary":        data.get("summary", ""),
+        "experience":     data.get("experience") or [],
+        "education":      data.get("education") or [],
+        "skills":         skills,
+        "certifications": data.get("certifications") or [],
+        "training":       data.get("training") or [],
+        "languages":      data.get("languages") or [],
+        "projects":       data.get("projects") or [],
+        "raw_text":       arabic_raw_text,  # preserve original Arabic text
+    }
+    return cv_data, in_tok, out_tok
+
+
 def parse_cv(
     file: BinaryIO,
     filename: str,
@@ -940,7 +1103,28 @@ def parse_cv(
 
     Raises NonCVDocumentError if the document appears to be a job offer / JD.
     """
+    # Buffer file bytes so we can pass PDF data to Claude if Arabic is detected.
+    # This must happen before extract_text() consumes the file pointer.
+    _file_bytes = file.read()
+    file = io.BytesIO(_file_bytes)
+
     raw_text, in_tok, out_tok = extract_text(file, filename, api_key=api_key)
+
+    # ── Arabic CV detection ───────────────────────────────────────────────────
+    # pdfminer and PyMuPDF can extract Arabic Unicode text successfully, but the
+    # downstream section parsers (_parse_experience, _parse_education, etc.) are
+    # Latin-only. When a PDF is predominantly Arabic, route to Claude for structured
+    # English extraction using the same CVData key structure as the English path.
+    _ext = Path(filename).suffix.lower()
+    if _ext == ".pdf" and _is_arabic_dominant(raw_text) and api_key:
+        try:
+            arabic_cv, ar_in, ar_out = _extract_arabic_cv_via_claude(
+                _file_bytes, raw_text, api_key
+            )
+            return arabic_cv, in_tok + ar_in, out_tok + ar_out
+        except Exception:
+            # Fall through to normal parse if Claude extraction fails
+            pass
 
     # Classify document type (job offer detection) — only when API key available
     if check_doc_type and api_key and raw_text.strip():
