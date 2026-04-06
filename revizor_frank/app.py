@@ -1815,14 +1815,21 @@ def _init_review_state():
 
     def _add(key, label, section, idx=-1):
         orig = _clean_for_display(_cv_section_text(original, section, idx))
-        # Last resort for summary: if still empty, pull first non-contact paragraph from raw_text
-        if not orig and section == "summary" and original.get("raw_text"):
-            _email_re = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
-            for _para in re.split(r"\n{2,}", original["raw_text"]):
-                _clean = _para.strip()
-                if len(_clean.split()) >= 10 and not _email_re.search(_clean):
-                    orig = _clean[:400]
-                    break
+        # Last resort for summary: try raw_text first, then structured fallback
+        if not orig and section == "summary":
+            _rt = original.get("raw_text", "")
+            if _rt and len(_rt.strip()) > 100:
+                _email_re = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
+                for _para in re.split(r"\n{2,}", _rt):
+                    _clean = _para.strip()
+                    if len(_clean.split()) >= 10 and not _email_re.search(_clean):
+                        orig = _clean[:400]
+                        break
+            if not orig:
+                # raw_text absent or unusable — pull summary from structured fields
+                _plain = _cv_to_plain_text(original)
+                if _plain:
+                    orig = _plain[:400]
         rev  = _cv_section_text(revised,  section, idx)
         if rev:  # only add sections that actually have content
             decisions[key] = {
@@ -2270,6 +2277,81 @@ def _render_cv_html_preview(cv: dict, color: str = ""):
     _components.html("".join(parts), height=700, scrolling=True)
 
 
+def _cv_to_plain_text(cv: dict) -> str:
+    """Build a readable plain-text representation from structured CV fields.
+
+    Used as fallback when raw_text is absent or too short (< 100 chars).
+    Order: name, title, contact, summary, experience, education, skills,
+           training, languages.
+    """
+    lines: list[str] = []
+
+    if cv.get("name"):
+        lines.append(cv["name"])
+    if cv.get("title"):
+        lines.append(cv["title"])
+
+    # Contact line
+    contact_parts = []
+    if cv.get("email"):
+        contact_parts.append(cv["email"])
+    _phones = cv.get("phones") or (
+        [p.strip() for p in cv["phone"].split("|") if p.strip()]
+        if cv.get("phone") else []
+    )
+    if _phones:
+        contact_parts.append(" | ".join(_phones))
+    for _cf in ("location", "linkedin", "website"):
+        if cv.get(_cf):
+            contact_parts.append(cv[_cf])
+    if contact_parts:
+        lines.append("  |  ".join(contact_parts))
+
+    if cv.get("summary"):
+        lines += ["", "SUMMARY", "-" * 40, cv["summary"]]
+
+    if cv.get("experience"):
+        lines += ["", "EXPERIENCE", "-" * 40]
+        for exp in cv["experience"]:
+            role = exp.get("title", "")
+            company = exp.get("company", "")
+            dates = f"{exp.get('start_date', '')} – {exp.get('end_date', 'Present')}".strip(" –")
+            lines.append(f"{role}  |  {company}  |  {dates}".strip("  |  "))
+            for b in exp.get("bullets", []):
+                lines.append(f"  • {b}")
+            lines.append("")
+
+    if cv.get("education"):
+        lines += ["", "EDUCATION", "-" * 40]
+        for edu in cv["education"]:
+            deg = edu.get("degree", "")
+            inst = edu.get("institution", "")
+            yr = edu.get("year", "")
+            lines.append(f"{deg}  |  {inst}  |  {yr}".strip("  |  "))
+
+    if cv.get("skills", {}).get("categories"):
+        lines += ["", "SKILLS", "-" * 40]
+        for cat in cv["skills"]["categories"]:
+            items = ", ".join(cat.get("items", []))
+            if items:
+                lines.append(f"{cat.get('name', 'Skills')}: {items}")
+
+    if cv.get("training"):
+        lines += ["", "PROFESSIONAL TRAINING", "-" * 40]
+        for tr in cv["training"]:
+            line = tr.get("name", "")
+            if tr.get("organisation"):
+                line += f"  —  {tr['organisation']}"
+            if tr.get("date"):
+                line += f"  ({tr['date']})"
+            lines.append(line)
+
+    if cv.get("languages"):
+        lines += ["", "LANGUAGES", "-" * 40, ", ".join(cv["languages"])]
+
+    return "\n".join(lines).strip()
+
+
 def render_full_preview():
     """Full CV preview — original vs revised, side by side."""
     _render_top_nav()
@@ -2287,8 +2369,13 @@ def render_full_preview():
     with col_orig:
         st.markdown("### Original CV")
         raw = original_cv.get("raw_text", "")
-        if raw:
-            st.text_area("", value=raw, height=800, disabled=True,
+        if raw and len(raw.strip()) > 100:
+            orig_text = raw
+        else:
+            # raw_text absent or too short — build from structured fields
+            orig_text = _cv_to_plain_text(original_cv)
+        if orig_text:
+            st.text_area("", value=orig_text, height=800, disabled=True,
                          label_visibility="collapsed", key="preview_orig")
         else:
             st.info("Original text not available.")
