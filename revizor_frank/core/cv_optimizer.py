@@ -122,6 +122,7 @@ CRITICAL RULES:
 6. Reorder skills to put JD-matching skills first
 7. Identify and include every relevant keyword from the JD that the candidate can legitimately claim
 8. Keep all dates, companies, and factual details from the original — only language changes
+9. Always write all output in English regardless of the original CV language.
 
 JOB DESCRIPTION:
 {job_description}
