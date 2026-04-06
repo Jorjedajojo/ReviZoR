@@ -1964,6 +1964,9 @@ def render_review_changes():
             + ", ".join(st.session_state.recommended_missing)
         )
 
+    # ── Progress / instruction banner (above buttons so it's never below the fold)
+    st.info("Approve or edit each section below, then click **Finalise CV →** to continue.")
+
     top_left, top_mid, top_right = st.columns([2, 3, 2])
     with top_left:
         if st.button("✅ Approve All Changes", use_container_width=True):
@@ -1973,15 +1976,14 @@ def render_review_changes():
             st.session_state.review_decisions = decisions
             _autosave_session()
             st.rerun()
+        st.caption("Accepts all AI suggestions without review.")
     with top_right:
         if st.button("Finalise CV →", type="primary", use_container_width=True,
-                     disabled=not all_done):
+                     disabled=not all_done, key="finalise_top"):
             st.session_state.ai_cv_general = _apply_review_decisions()
             _go_to_stage("full_preview")
+        st.caption(f"{approved}/{total} sections reviewed")
 
-    if not all_done:
-        st.info(f"{total - approved} section(s) pending — approve or edit each one, "
-                "or click **Approve All Changes** to accept everything.")
     st.divider()
 
     for key, dec in decisions.items():
@@ -2054,6 +2056,16 @@ def render_review_changes():
                             editing.append(key)
                         st.session_state.review_editing = editing
                         st.rerun()
+
+    # ── Bottom Finalise repeat (convenience) ─────────────────────────────────
+    st.divider()
+    _, _bot_mid, _ = st.columns([2, 3, 2])
+    with _bot_mid:
+        if st.button("Finalise CV →", type="primary", use_container_width=True,
+                     disabled=not all_done, key="finalise_bottom"):
+            st.session_state.ai_cv_general = _apply_review_decisions()
+            _go_to_stage("full_preview")
+        st.caption(f"{approved}/{total} sections reviewed")
 
     _render_questions_panel()
 
