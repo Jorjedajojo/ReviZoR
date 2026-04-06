@@ -100,6 +100,19 @@ class AcademicTemplate(BaseTemplate):
                     line += f"  ({cert['date']})"
                 story.append(Paragraph(f"• {line}", bullets))
 
+        # Training
+        if cv.get("training"):
+            story.extend(self._section_heading("Professional Training"))
+            for item in cv["training"]:
+                line = item.get("name", "")
+                if item.get("organisation"):
+                    line += f"  —  {item['organisation']}"
+                if item.get("date"):
+                    line += f"  ({item['date']})"
+                story.append(Paragraph(f"• {line}", bullets))
+                if item.get("description"):
+                    story.append(Paragraph(item["description"], muted))
+
         # Languages
         if cv.get("languages"):
             story.extend(self._section_heading("Languages"))
