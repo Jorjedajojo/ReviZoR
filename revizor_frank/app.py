@@ -138,8 +138,9 @@ def render_simple_login():
                     from revizor_frank.storage import supabase_db as _sdb
                     _saved = _sdb.load_session(username.strip().lower())
                     if _saved:
+                        # Individual columns (denormalised store)
                         _restorable = [
-                            "parsed_cv", "ai_cv_general", "offline_cv",
+                            "parsed_cv", "ai_cv_general", "ai_cv_jd", "offline_cv",
                             "linkedin_data", "job_description", "service_tier",
                             "selected_template", "template_color",
                             "filename", "ats_report",
@@ -147,13 +148,25 @@ def render_simple_login():
                         for _key in _restorable:
                             if _saved.get(_key) and not st.session_state.get(_key):
                                 st.session_state[_key] = _saved[_key]
+
+                        # Keys from session_data blob (required fields per brief)
+                        _sd = _saved.get("session_data") or {}
+                        if _sd.get("missing_fields") and not st.session_state.get("missing_fields"):
+                            st.session_state.missing_fields = _sd["missing_fields"]
+                        if _sd.get("questions_list") and not st.session_state.get("questions_list"):
+                            st.session_state.questions_list = _sd["questions_list"]
+
+                        # Restore session_id; flag that parse already happened
+                        if _saved.get("session_id"):
+                            st.session_state.session_id = _saved["session_id"]
+                        if _saved.get("parsed_cv"):
+                            # Parsed data is present — skip re-parsing for this session_id
+                            st.session_state.session_already_parsed = True
+
                         # NEVER restore stage — always land on select_service
                         st.session_state.stage = "select_service"
-                        _fn = _saved.get("filename", "a previous CV")
-                        st.toast(
-                            f"Welcome back! Data from '{_fn}' is pre-loaded. "
-                            "Start a new CV or go to Download to retrieve your last output."
-                        )
+                        # Set banner flag (shown once; dismissed by user)
+                        st.session_state.session_restored_banner = True
                 except Exception:
                     pass
                 st.rerun()
@@ -277,6 +290,9 @@ def _init_state():
         "simple_auth_time": None,
         "simple_auth_user": None,
         "user_role":        "user",  # "user" | "admin"
+        # Session persistence
+        "session_already_parsed":  False,  # True when parsed_cv was restored from Supabase
+        "session_restored_banner": False,  # True when a previous session was loaded on login
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -425,6 +441,20 @@ def render_login():
 def _check_online() -> bool:
     from revizor_frank.core.sync_manager import is_online
     return is_online()
+
+
+# ── Session ID helpers ────────────────────────────────────────────────────────
+
+def _make_upload_session_id(username: str, filename: str) -> str:
+    """Return a short deterministic session ID derived from username + upload timestamp.
+
+    Using current timestamp at minute precision: same user re-uploading the same
+    file within the same minute gets the same ID (deduplication window), but a
+    new upload the next minute gets a fresh ID.
+    """
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M")
+    raw = f"{username.lower()}:{filename}:{ts}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
 # ── Stage navigation ─────────────────────────────────────────────────────────
@@ -688,6 +718,18 @@ def render_sidebar():
 def render_select_service():
     _render_top_nav()
     st.markdown(f"# 📄 {APP_NAME}")
+
+    # ── Session-restored banner (shown once after login; dismissed by button) ─
+    if st.session_state.get("session_restored_banner"):
+        _fn = st.session_state.get("filename", "your previous CV")
+        st.info(
+            f"👋 Welcome back — your previous session has been restored "
+            f"(*{_fn}*). Start a new CV or continue below."
+        )
+        if st.button("Dismiss", key="dismiss_restore_banner"):
+            st.session_state.session_restored_banner = False
+            st.rerun()
+
     st.markdown("*Choose your service before uploading your CV.*")
     st.divider()
 
@@ -811,6 +853,13 @@ language, optimizes for your target role.
         st.session_state.filename = uploaded.name
         st.session_state.uploaded_cv_bytes = uploaded.getvalue()
         st.session_state.job_description = jd.strip()
+        # Derive a session_id from username + upload timestamp for dedup / skip-reparse
+        _upload_username = (
+            st.session_state.get("simple_auth_user") or
+            (st.session_state.get("auth_user") or {}).get("username", "anon")
+        )
+        st.session_state.session_id = _make_upload_session_id(_upload_username, uploaded.name)
+        st.session_state.session_already_parsed = False
         st.session_state.certificates = []
         st.session_state.classified_files = []
         st.session_state.additional_cv_data = []
@@ -1083,22 +1132,32 @@ def _run_pipeline():
 
     try:
         # 1. Parse
-        status.info(f"⚙️ {S['parsing_cv']}")
-        file_bytes = io.BytesIO(cv_bytes)
-        from revizor_frank.core.cv_parser import NonCVDocumentError
-        try:
-            parsed, pdf_in_tok, pdf_out_tok = cv_parser.parse_cv(
-                file_bytes, filename, api_key=ANTHROPIC_API_KEY
-            )
-        except NonCVDocumentError:
-            progress.empty()
-            status.empty()
-            st.error(
-                "⚠️ This file doesn't appear to be a CV or resume. "
-                "Please upload your CV file instead."
-            )
-            st.session_state.stage = "upload"
-            return
+        # ── Skip-reparse guard: if session was restored from Supabase and the
+        #    session_id matches the current upload, reuse the saved parsed_cv to
+        #    avoid burning API tokens on a CV we have already processed.
+        _saved_parsed = st.session_state.get("parsed_cv") if st.session_state.get("session_already_parsed") else None
+        if _saved_parsed and st.session_state.get("session_id") and st.session_state.get("filename") == filename:
+            status.info("⚙️ Reusing parsed CV from previous session (no re-parsing needed)…")
+            parsed = _saved_parsed
+            pdf_in_tok, pdf_out_tok = 0, 0
+            st.session_state.session_already_parsed = False  # consume the flag
+        else:
+            status.info(f"⚙️ {S['parsing_cv']}")
+            file_bytes = io.BytesIO(cv_bytes)
+            from revizor_frank.core.cv_parser import NonCVDocumentError
+            try:
+                parsed, pdf_in_tok, pdf_out_tok = cv_parser.parse_cv(
+                    file_bytes, filename, api_key=ANTHROPIC_API_KEY
+                )
+            except NonCVDocumentError:
+                progress.empty()
+                status.empty()
+                st.error(
+                    "⚠️ This file doesn't appear to be a CV or resume. "
+                    "Please upload your CV file instead."
+                )
+                st.session_state.stage = "upload"
+                return
         # Accumulate vision-extraction tokens into the cert bucket
         st.session_state.cert_input_tokens  = st.session_state.get("cert_input_tokens",  0) + pdf_in_tok
         st.session_state.cert_output_tokens = st.session_state.get("cert_output_tokens", 0) + pdf_out_tok

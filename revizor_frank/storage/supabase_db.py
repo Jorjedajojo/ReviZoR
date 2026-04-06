@@ -41,6 +41,36 @@ Table schema (run once in your Supabase SQL editor):
     );
     -- If upgrading: CREATE TABLE cv_owner_questions (...) as above.
 
+    -- Session persistence across logouts.
+    -- username is the unique key; one saved row per user (upserted on every stage transition).
+    -- session_data holds the canonical JSON payload; individual columns are denormalised copies
+    -- kept for fast admin queries without deserialising the full blob.
+    CREATE TABLE IF NOT EXISTS saved_sessions (
+      id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      username       TEXT NOT NULL UNIQUE,
+      updated_at     TIMESTAMPTZ DEFAULT NOW(),
+      session_id     TEXT,            -- derived from username + upload timestamp
+      stage          TEXT,
+      filename       TEXT,
+      session_data   JSONB,           -- canonical payload: original_cv, optimised_cv,
+                                      --   missing_fields, current_stage, selected_template,
+                                      --   questions_list (and more)
+      parsed_cv      JSONB,
+      ai_cv_general  JSONB,
+      ai_cv_jd       JSONB,
+      offline_cv     JSONB,
+      linkedin_data  JSONB,
+      job_description TEXT,
+      service_tier   TEXT,
+      selected_template TEXT,
+      template_color TEXT,
+      ats_report     JSONB,
+      missing_fields JSONB
+    );
+    -- If upgrading an existing saved_sessions table that lacks session_data:
+    -- ALTER TABLE saved_sessions ADD COLUMN IF NOT EXISTS session_data JSONB;
+    -- ALTER TABLE saved_sessions ADD COLUMN IF NOT EXISTS session_id TEXT;
+
 Pricing model (claude-sonnet-4-6):
   Input:  $3.00 per 1,000,000 tokens
   Output: $15.00 per 1,000,000 tokens
@@ -355,7 +385,11 @@ def close_owner_questions(row_id: str) -> bool:
 
 
 def save_session(username: str, state: dict) -> bool:
-    """Upsert session state for a user in saved_sessions table."""
+    """Upsert session state for a user in saved_sessions table.
+
+    Writes both the canonical session_data JSONB blob and the denormalised
+    individual columns so that admin queries can filter without deserialising.
+    """
     client = _get_client()
     if client is None:
         return False
@@ -370,23 +404,38 @@ def save_session(username: str, state: dict) -> bool:
             except (TypeError, ValueError):
                 return False
 
-        payload = {
-            "username": username,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-            "stage": state.get("stage"),
-            "filename": state.get("filename"),
-            "parsed_cv": state.get("parsed_cv") if _serializable(state.get("parsed_cv")) else None,
-            "ai_cv_general": state.get("ai_cv_general") if _serializable(state.get("ai_cv_general")) else None,
-            "ai_cv_jd": state.get("ai_cv_jd") if _serializable(state.get("ai_cv_jd")) else None,
-            "offline_cv": state.get("offline_cv") if _serializable(state.get("offline_cv")) else None,
-            "linkedin_data": state.get("linkedin_data") if _serializable(state.get("linkedin_data")) else None,
-            "job_description": state.get("job_description"),
-            "service_tier": state.get("service_tier"),
+        def _safe(v):
+            return v if _serializable(v) else None
+
+        # ── Canonical session_data blob (keys required by brief) ─────────────
+        session_data = {
+            "original_cv":       _safe(state.get("parsed_cv")),
+            "optimised_cv":      _safe(state.get("ai_cv_general")),
+            "missing_fields":    state.get("missing_fields") or [],
+            "current_stage":     state.get("stage"),
             "selected_template": state.get("selected_template"),
-            "template_color": state.get("template_color"),
-            "ats_report": state.get("ats_report") if _serializable(state.get("ats_report")) else None,
-            "missing_fields": state.get("missing_fields"),
-            "session_id": str(state.get("session_id") or ""),
+            "questions_list":    _safe(state.get("questions_list")) or [],
+        }
+
+        payload = {
+            "username":        username,
+            "updated_at":      datetime.now(timezone.utc).isoformat(),
+            "session_id":      str(state.get("session_id") or ""),
+            "stage":           state.get("stage"),
+            "filename":        state.get("filename"),
+            "session_data":    session_data,
+            # denormalised columns for admin queries
+            "parsed_cv":       _safe(state.get("parsed_cv")),
+            "ai_cv_general":   _safe(state.get("ai_cv_general")),
+            "ai_cv_jd":        _safe(state.get("ai_cv_jd")),
+            "offline_cv":      _safe(state.get("offline_cv")),
+            "linkedin_data":   _safe(state.get("linkedin_data")),
+            "job_description": state.get("job_description"),
+            "service_tier":    state.get("service_tier"),
+            "selected_template": state.get("selected_template"),
+            "template_color":  state.get("template_color"),
+            "ats_report":      _safe(state.get("ats_report")),
+            "missing_fields":  state.get("missing_fields"),
         }
         client.table("saved_sessions").upsert(
             payload, on_conflict="username"
