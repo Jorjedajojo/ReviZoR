@@ -2747,22 +2747,52 @@ def _render_edit_cv_tab(include_linkedin: bool):
     if st.button(btn_label, type="primary"):
         st.session_state.edited_cv_text = edited
 
-        # Parse edited text back to a CVData dict so exports use the edits
+        # Merge edited text onto the existing structured dict — do NOT re-parse.
+        # Re-parsing plain text destroys structured fields (experience bullets,
+        # skills categories, education, training) that cannot be reconstructed.
         _edit_ok = False
         try:
-            from revizor_frank.core.cv_parser import parse_cv as _parse_cv
-            _raw = io.BytesIO(edited.encode("utf-8"))
-            edited_cv_dict, _, _ = _parse_cv(_raw, "edited_cv.txt",
-                                             api_key="", check_doc_type=False)
-            # Preserve fields not reconstructable from plain text
-            for _field in ("title", "dob", "linkedin", "website", "raw_text"):
-                if not edited_cv_dict.get(_field) and (cv_source or {}).get(_field):
-                    edited_cv_dict[_field] = (cv_source or {})[_field]
-            st.session_state.edited_cv = edited_cv_dict
+            import copy
+            _base = st.session_state.get("ai_cv_general") or st.session_state.get("offline_cv") or {}
+            merged = copy.deepcopy(_base)
+
+            # Extract only the summary block from the edited text:
+            # first non-empty paragraph before any section heading.
+            _summary_lines: list[str] = []
+            _heading_re = re.compile(
+                r"^\s*(SUMMARY|PROFILE|OBJECTIVE|EXPERIENCE|EDUCATION|SKILLS|"
+                r"CERTIFICATIONS?|TRAINING|LANGUAGES?|PROJECTS?|PUBLICATIONS?|"
+                r"AWARDS?|VOLUNTEER|PROFESSIONAL\s+SUMMARY|PROFESSIONAL\s+TRAINING)\s*$",
+                re.I,
+            )
+            _collecting = False
+            for _line in edited.splitlines():
+                if not _line.strip():
+                    if _collecting:
+                        break  # end of first paragraph
+                    continue
+                if _heading_re.match(_line):
+                    if _collecting:
+                        break  # hit a section heading — stop
+                    # first non-blank line is already a heading; skip summary extraction
+                    break
+                _collecting = True
+                _summary_lines.append(_line.strip())
+
+            _extracted_summary = " ".join(_summary_lines).strip()
+            if _extracted_summary:
+                merged["summary"] = _extracted_summary
+
+            # Preserve non-editable fields from original if missing in merged
+            for _field in ("title", "dob", "linkedin", "website", "phones", "phone", "email", "raw_text"):
+                if not merged.get(_field) and _base.get(_field):
+                    merged[_field] = _base[_field]
+
+            st.session_state.edited_cv = merged
             _edit_ok = True
-        except Exception as _parse_err:
+        except Exception as _merge_err:
             st.session_state.edited_cv = None
-            st.error(f"Could not save edits: {_parse_err}. Please check your CV text format.")
+            st.error(f"Could not save edits: {_merge_err}.")
 
         if _edit_ok and include_linkedin and st.session_state.online and st.session_state.ai_cv_general:
             with st.spinner("Regenerating LinkedIn profile from edited CV…"):
