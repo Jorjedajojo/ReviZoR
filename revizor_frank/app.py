@@ -828,7 +828,7 @@ language, optimizes for your target role.
         st.session_state.missing_fields      = []
         st.session_state.recommended_missing = []
 
-        # Pre-flight: quick parse to detect obviously missing fields
+        # Pre-flight: quick parse to detect required missing fields
         try:
             import io as _io
             from revizor_frank.core import cv_parser as _cvp
@@ -836,23 +836,9 @@ language, optimizes for your target role.
                 _io.BytesIO(uploaded.getvalue()), uploaded.name,
                 api_key="", check_doc_type=False,
             )
-            basic_missing = []
-            if not _quick.get("email"):
-                basic_missing.append("professional email address")
-            _qphones = _quick.get("phones") or (
-                [p.strip() for p in _quick["phone"].split("|") if p.strip()]
-                if _quick.get("phone") else []
-            )
-            if not _qphones:
-                basic_missing.append("phone number")
-            if not _quick.get("summary") or len((_quick.get("summary") or "").split()) < 10:
-                basic_missing.append("professional summary")
-            if basic_missing:
-                st.info(
-                    f"ℹ️ The following may be missing from this CV: "
-                    f"{', '.join(basic_missing)}. "
-                    "You can proceed — you will be prompted to request this from the client after analysis."
-                )
+            # Use REQUIRED_FIELDS check from cv_parser
+            basic_missing = _cvp.check_required_fields(_quick)
+            st.session_state.missing_fields = basic_missing
         except Exception:
             pass
 
@@ -865,6 +851,16 @@ def render_upload_certs():
     _render_top_nav()
     st.markdown(f"# 📄 {APP_NAME}")
     st.markdown(f"**CV uploaded:** `{st.session_state.filename}`")
+
+    # ── Required-fields warning ───────────────────────────────────────────────
+    _missing = st.session_state.get("missing_fields") or []
+    if _missing:
+        st.warning(
+            "The following information is missing from this CV. "
+            "Please request it from the candidate before proceeding.\n\n"
+            + "\n".join(f"- {f}" for f in _missing)
+        )
+
     st.divider()
 
     col_left, col_right = st.columns([2, 1], gap="large")
@@ -1133,6 +1129,11 @@ def _run_pipeline():
                 parsed = merge_cv_data(parsed, extra)
 
         st.session_state.parsed_cv = parsed
+
+        # Update missing_fields from the full parse (overrides pre-flight result)
+        from revizor_frank.core import cv_parser as _cvp_full
+        st.session_state.missing_fields = _cvp_full.check_required_fields(parsed)
+
         progress.progress(20, text=S["parsing_cv"])
 
         # 2. Create DB session
@@ -2770,7 +2771,9 @@ def render_admin_dashboard():
     st.markdown("# 🛠 Admin Dashboard")
     st.divider()
 
-    tab_pl, tab_pending, tab_tc = st.tabs(["📊 P&L / Runs", "⏰ Pending Responses", "📋 T&C Draft"])
+    tab_pl, tab_pending, tab_incomplete, tab_tc = st.tabs([
+        "📊 P&L / Runs", "⏰ Pending Responses", "⚠️ Incomplete CVs", "📋 T&C Draft"
+    ])
 
     with tab_pl:
         # ── Month selector ────────────────────────────────────────────────────
@@ -2946,6 +2949,35 @@ def render_admin_dashboard():
                     file_name="revizor_pending_responses.csv",
                     mime="text/csv",
                 )
+
+    with tab_incomplete:
+        st.markdown("### Candidates with Incomplete CVs")
+        st.caption(
+            "Sessions where required fields are missing from the parsed CV. "
+            "Flag: **Incomplete — awaiting info.**"
+        )
+        try:
+            from revizor_frank.storage import supabase_db as _sdb_inc
+            incomplete_rows = _sdb_inc.get_incomplete_sessions()
+        except Exception as _inc_e:
+            st.error(f"Could not load incomplete sessions: {_inc_e}")
+            incomplete_rows = []
+
+        if not incomplete_rows:
+            st.info("No incomplete CV records found.")
+        else:
+            for row in incomplete_rows:
+                username   = row.get("username", "—")
+                filename   = row.get("filename", "—")
+                updated    = (row.get("updated_at") or "")[:10]
+                missing    = row.get("missing_fields") or []
+                with st.expander(
+                    f"⚠️ Incomplete — awaiting info.  |  {username}  |  {filename}  |  {updated}"
+                ):
+                    st.warning("Incomplete — awaiting info.")
+                    st.markdown("**Missing fields:**")
+                    for mf in missing:
+                        st.write(f"• {mf}")
 
     with tab_tc:
         st.markdown("### T&C Reference Draft")

@@ -419,6 +419,27 @@ def load_session(username: str) -> dict | None:
         return None
 
 
+def get_incomplete_sessions() -> list[dict]:
+    """Return saved_sessions rows where missing_fields is a non-empty list."""
+    client = _get_client()
+    if client is None:
+        return []
+    try:
+        r = (
+            client.table("saved_sessions")
+            .select("username, stage, filename, missing_fields, updated_at, session_id")
+            .order("updated_at", desc=True)
+            .execute()
+        )
+        return [
+            row for row in (r.data or [])
+            if row.get("missing_fields")  # non-null and non-empty list
+        ]
+    except Exception as e:
+        logger.warning("get_incomplete_sessions failed: %s", e)
+        return []
+
+
 def update_preferred_channel(session_id: str, channel: str) -> None:
     """Record the co-worker's preferred share channel on the cv_runs row."""
     client = _get_client()

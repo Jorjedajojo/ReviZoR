@@ -39,6 +39,60 @@ from typing import BinaryIO
 import anthropic
 
 
+# ── Required fields ───────────────────────────────────────────────────────────
+# Fields that must be present for a CV to be considered complete.
+# skills_core is checked via the nested skills["categories"] structure.
+REQUIRED_FIELDS: list[str] = [
+    "name",
+    "email",
+    "phones",
+    "experience",
+    "education",
+    "skills_core",
+]
+
+_REQUIRED_FIELD_LABELS: dict[str, str] = {
+    "name":       "Full name",
+    "email":      "Email address",
+    "phones":     "Phone number",
+    "experience": "Work experience",
+    "education":  "Education",
+    "skills_core": "Core skills",
+}
+
+
+def check_required_fields(cv_data: dict) -> list[str]:
+    """Return a list of human-readable labels for required fields that are missing or empty.
+
+    Checks REQUIRED_FIELDS against the parsed CVData dict.
+    skills_core is satisfied when at least one Core Competencies category has items.
+    """
+    missing: list[str] = []
+    for field in REQUIRED_FIELDS:
+        label = _REQUIRED_FIELD_LABELS.get(field, field)
+        if field == "phones":
+            phones = cv_data.get("phones") or []
+            if isinstance(phones, str):
+                phones = [p.strip() for p in phones.split("|") if p.strip()]
+            if not phones:
+                missing.append(label)
+        elif field == "skills_core":
+            # Satisfied if any category named "Core Competencies" (or similar) has items
+            cats = cv_data.get("skills", {}).get("categories", [])
+            has_core = any(
+                cat.get("items")
+                for cat in cats
+                if "core" in cat.get("name", "").lower() or "competenc" in cat.get("name", "").lower()
+            )
+            if not has_core:
+                missing.append(label)
+        else:
+            val = cv_data.get(field)
+            if not val:
+                missing.append(label)
+    return missing
+
+
 # ── Text extraction ────────────────────────────────────────────────────────────
 
 def extract_text_from_pdf(file: BinaryIO, api_key: str = "") -> tuple[str, int, int]:
