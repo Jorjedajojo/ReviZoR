@@ -1521,6 +1521,61 @@ def _render_questions_for_section(section_key: str):
     st.caption("_Edit or send below ↓_")
 
 
+def _send_questions_email(
+    to_email: str,
+    candidate_name: str,
+    questions: list[dict],
+) -> tuple[bool, str]:
+    """Send questions to the candidate via SMTP (configured in st.secrets["smtp"]).
+
+    Returns (success, error_message).
+    """
+    import smtplib
+    import ssl
+    from email.mime.text import MIMEText
+    from email.mime.multipart import MIMEMultipart
+
+    try:
+        smtp_cfg = st.secrets.get("smtp", {})
+    except Exception:
+        smtp_cfg = {}
+
+    host     = smtp_cfg.get("host", "")
+    port     = int(smtp_cfg.get("port", 587))
+    username = smtp_cfg.get("username", "")
+    password = smtp_cfg.get("password", "")
+    from_addr = smtp_cfg.get("from_address", username)
+
+    if not (host and username and password):
+        return False, "SMTP credentials not configured in st.secrets['smtp']."
+
+    subject = f"Further information needed — {candidate_name}"
+    body_lines = ["Hi,\n", "We are reviewing your CV and have a few questions:\n"]
+    for i, q in enumerate(questions, 1):
+        text = q.get("text", "").strip()
+        if text:
+            body_lines.append(f"{i}. {text}")
+    body_lines.append("\nPlease reply to this email at your earliest convenience.\n")
+    body = "\n".join(body_lines)
+
+    msg = MIMEMultipart()
+    msg["From"]    = from_addr
+    msg["To"]      = to_email
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body, "plain"))
+
+    try:
+        context = ssl.create_default_context()
+        with smtplib.SMTP(host, port) as server:
+            server.ehlo()
+            server.starttls(context=context)
+            server.login(username, password)
+            server.sendmail(from_addr, to_email, msg.as_string())
+        return True, ""
+    except Exception as exc:  # noqa: BLE001
+        return False, str(exc)
+
+
 def _render_questions_panel():
     """Bottom-of-review panel: add questions, send to CV owner."""
     st.divider()
@@ -1577,29 +1632,56 @@ def _render_questions_panel():
 
     # ── Send button ──────────────────────────────────────────────────────────
     if st.button("📤 Send to CV owner", type="primary"):
-        token = uuid.uuid4().hex
-        expires = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
-        from revizor_frank.storage import supabase_db as _sdb
-        session_id = str(st.session_state.get("session_id") or "")
-        ok = _sdb.save_owner_questions(
-            session_id=session_id,
-            token=token,
-            questions=checked_questions,
-            expires_at=expires,
-        )
-        if ok:
-            st.session_state.questions_token = token
-            st.session_state.questions_sent  = True
-            st.rerun()
+        # ── Email send ───────────────────────────────────────────────────────
+        candidate_email = (
+            st.session_state.get("original_cv", {}).get("email", "")
+            or st.session_state.get("edited_cv", {}).get("email", "")
+        ).strip()
+        if not candidate_email:
+            st.error("No candidate email found — please check the original CV.")
         else:
-            # Supabase not configured — show copy-link fallback
+            candidate_name = (
+                st.session_state.get("original_cv", {}).get("name", "")
+                or st.session_state.get("edited_cv", {}).get("name", "Candidate")
+            ).strip()
+            _email_ok, _email_err = _send_questions_email(
+                to_email=candidate_email,
+                candidate_name=candidate_name,
+                questions=checked_questions,
+            )
+            if _email_ok:
+                st.session_state.questions_email_sent_to = candidate_email
+            else:
+                st.session_state.questions_email_error = _email_err
+
+            # ── Supabase save + share channels (unchanged) ───────────────────
+            token = uuid.uuid4().hex
+            expires = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+            from revizor_frank.storage import supabase_db as _sdb
+            session_id = str(st.session_state.get("session_id") or "")
+            ok = _sdb.save_owner_questions(
+                session_id=session_id,
+                token=token,
+                questions=checked_questions,
+                expires_at=expires,
+            )
+            if not ok:
+                st.warning(
+                    "Supabase is not configured. The link below will not work until "
+                    "SUPABASE_URL and SUPABASE_ANON_KEY are set."
+                )
             st.session_state.questions_token = token
             st.session_state.questions_sent  = True
-            st.warning(
-                "Supabase is not configured. The link below will not work until "
-                "SUPABASE_URL and SUPABASE_ANON_KEY are set."
-            )
             st.rerun()
+
+    # Show email send result (persists across rerun)
+    if st.session_state.get("questions_email_sent_to"):
+        st.success(f"Questions sent to {st.session_state.questions_email_sent_to}.")
+    if st.session_state.get("questions_email_error"):
+        st.warning(
+            f"Email delivery failed: {st.session_state.questions_email_error} "
+            "— use the share link below to reach the candidate."
+        )
 
 
 def _render_send_channels(token: str):
