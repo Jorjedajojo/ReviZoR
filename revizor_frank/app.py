@@ -457,6 +457,21 @@ def _make_upload_session_id(username: str, filename: str) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
+# ── Session save helper ───────────────────────────────────────────────────────
+
+def _autosave_session() -> None:
+    """Save current session to Supabase. Silent fail — never raises."""
+    username = (st.session_state.get("simple_auth_user") or
+                (st.session_state.get("auth_user") or {}).get("username", ""))
+    if not username:
+        return
+    try:
+        from revizor_frank.storage import supabase_db as _sdb
+        _sdb.save_session(username, dict(st.session_state))
+    except Exception:
+        pass
+
+
 # ── Stage navigation ─────────────────────────────────────────────────────────
 
 def _go_to_stage(stage: str):
@@ -468,7 +483,9 @@ def _go_to_stage(stage: str):
     if username:
         try:
             from revizor_frank.storage import supabase_db as _sdb
-            _sdb.save_session(username, dict(st.session_state))
+            _saved = _sdb.save_session(username, dict(st.session_state))
+            if _saved:
+                st.toast("Progress saved", icon="✅")
         except Exception:
             pass
     st.rerun()
@@ -710,6 +727,9 @@ def render_sidebar():
                 _go_to_stage("admin")
 
         st.divider()
+        _last_stage = st.session_state.get("stage", "")
+        if _last_stage:
+            st.sidebar.caption(f"Last saved: {_last_stage.replace('_', ' ').title()}")
         st.caption("ReviZoR FranK — Part of the ReviZoR HR Platform")
 
 
@@ -1951,6 +1971,7 @@ def render_review_changes():
                 dec["status"] = "approved"
             st.session_state.review_editing = []
             st.session_state.review_decisions = decisions
+            _autosave_session()
             st.rerun()
     with top_right:
         if st.button("Finalise CV →", type="primary", use_container_width=True,
@@ -1986,6 +2007,7 @@ def render_review_changes():
                         editing.remove(key)
                         st.session_state.review_editing   = editing
                         st.session_state.review_decisions = decisions
+                        _autosave_session()
                         st.rerun()
                 with c_cancel:
                     if st.button("Cancel", key=f"cancel_{key}", use_container_width=True):
@@ -2024,6 +2046,7 @@ def render_review_changes():
                                  type="primary" if status == "pending" else "secondary"):
                         dec["status"] = "approved"
                         st.session_state.review_decisions = decisions
+                        _autosave_session()
                         st.rerun()
                 with c_edit:
                     if st.button("✏️ Edit", key=f"edit_{key}", use_container_width=True):
