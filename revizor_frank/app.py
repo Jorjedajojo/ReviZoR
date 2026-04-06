@@ -2580,6 +2580,22 @@ def _render_cv_preview(cv: dict):
         for cert in cv["certifications"]:
             st.write(f"• {cert.get('name', '')} — {cert.get('issuer', '')}")
 
+    if cv.get("training"):
+        st.divider()
+        st.markdown("**Professional Training**")
+        for tr in cv["training"]:
+            line = tr.get("name", "")
+            if tr.get("organisation"):
+                line += f"  —  {tr['organisation']}"
+            if tr.get("date"):
+                line += f"  ({tr['date']})"
+            st.write(f"• {line}")
+
+    if cv.get("languages"):
+        st.divider()
+        st.markdown("**Languages**")
+        st.write(", ".join(cv["languages"]))
+
 
 def _render_linkedin_tab():
     li = st.session_state.linkedin_data
