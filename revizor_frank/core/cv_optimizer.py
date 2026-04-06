@@ -98,7 +98,7 @@ RULES:
 11. Preserve ALL training entries exactly — do not drop or invent training courses. Format each with name, organisation, date, and a one-line description of what was learned.
 12. Always split skills into exactly two categories: "Core Competencies" (soft skills, leadership, management, communication, strategic thinking) and "Technical Competencies" (software, tools, platforms, programming languages, technical methods). Never use other category names.
 13. Preserve the candidate's professional title exactly as given in the "title" field. If no title exists, infer one from their most recent role (e.g. "Senior Internal Auditor | Finance & Risk Professional").
-14. If the CV text contains Arabic script, rewrite all content in Arabic. Preserve Arabic script throughout — do not translate to English.
+14. Always write all output in English regardless of the original CV language. The input data has already been translated — maintain English throughout.
 
 INPUT CV DATA:
 {json.dumps(cv_data, indent=2)}

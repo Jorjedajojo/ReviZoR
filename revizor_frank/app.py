@@ -1838,7 +1838,7 @@ def _init_review_state():
         # Last resort for summary: try raw_text first, then structured fallback
         if not orig and section == "summary":
             _rt = original.get("raw_text", "")
-            if _rt and len(_rt.strip()) > 100:
+            if _rt and len(_rt.strip()) > 100 and _is_usable_text(_rt):
                 _email_re = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
                 for _para in re.split(r"\n{2,}", _rt):
                     _clean = _para.strip()
@@ -2300,6 +2300,21 @@ def _render_cv_html_preview(cv: dict, color: str = ""):
     _components.html("".join(parts), height=700, scrolling=True)
 
 
+def _is_usable_text(text: str) -> bool:
+    """Return False if more than 20% of non-whitespace characters are cid-token garbage.
+
+    pdfminer produces (cid:N) sequences for fonts it cannot decode. A high
+    proportion of these renders the text useless for display.
+    """
+    non_ws = [c for c in text if not c.isspace()]
+    if not non_ws:
+        return False
+    cid_matches = re.findall(r"\(cid:\d+\)", text)
+    # each match contributes its length in chars to the garbage count
+    cid_chars = sum(len(m) for m in cid_matches)
+    return cid_chars / len(non_ws) <= 0.20
+
+
 def _cv_to_plain_text(cv: dict) -> str:
     """Build a readable plain-text representation from structured CV fields.
 
@@ -2392,10 +2407,10 @@ def render_full_preview():
     with col_orig:
         st.markdown("### Original CV")
         raw = original_cv.get("raw_text", "")
-        if raw and len(raw.strip()) > 100:
+        if raw and len(raw.strip()) > 100 and _is_usable_text(raw):
             orig_text = raw
         else:
-            # raw_text absent or too short — build from structured fields
+            # raw_text absent, too short, or cid-garbage — build from structured fields
             orig_text = _cv_to_plain_text(original_cv)
         if orig_text:
             st.text_area("", value=orig_text, height=800, disabled=True,
