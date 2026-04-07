@@ -79,6 +79,18 @@ _LINKEDIN_SCHEMA = {
 
 # ── Prompt builders ───────────────────────────────────────────────────────────
 
+_PROMPT_STRIP_KEYS = frozenset(["raw_text", "phones", "session_id", "_filename"])
+
+
+def _clean_for_prompt(cv: dict) -> dict:
+    """Return a copy of cv with internal/noise fields removed before sending to Claude.
+
+    Strips raw_text (causes summary contamination), phones list (duplicate of
+    phone string), and internal keys not part of the output schema.
+    """
+    return {k: v for k, v in cv.items() if k not in _PROMPT_STRIP_KEYS}
+
+
 def _build_general_prompt(cv_data: dict) -> str:
     return f"""You are a world-class HR consultant, executive CV writer, and ATS optimization expert.
 
@@ -101,7 +113,7 @@ RULES:
 14. Always write all output in English regardless of the original CV language. The input data has already been translated — maintain English throughout.
 
 INPUT CV DATA:
-{json.dumps(cv_data, indent=2)}
+{json.dumps(_clean_for_prompt(cv_data), indent=2)}
 
 OUTPUT: Return ONLY a valid JSON object matching this schema exactly — no markdown, no commentary:
 {json.dumps(_CV_SCHEMA, indent=2)}
@@ -128,10 +140,10 @@ JOB DESCRIPTION:
 {job_description}
 
 OPTIMIZED CV (base for tailoring):
-{json.dumps(general_cv, indent=2)}
+{json.dumps(_clean_for_prompt(general_cv), indent=2)}
 
 ORIGINAL PARSED CV (for reference):
-{json.dumps(cv_data, indent=2)}
+{json.dumps(_clean_for_prompt(cv_data), indent=2)}
 
 OUTPUT: Return ONLY a valid JSON object matching this schema exactly — no markdown, no commentary:
 {json.dumps(_CV_SCHEMA, indent=2)}
@@ -155,7 +167,7 @@ LinkedIn-specific RULES:
 8. Summary tagline: One memorable sentence that captures the candidate's unique value{jd_section}
 
 OPTIMIZED CV DATA:
-{json.dumps(general_cv, indent=2)}
+{json.dumps(_clean_for_prompt(general_cv), indent=2)}
 
 OUTPUT: Return ONLY a valid JSON object matching this schema exactly — no markdown, no commentary:
 {json.dumps(_LINKEDIN_SCHEMA, indent=2)}
@@ -196,8 +208,12 @@ def _call_claude(prompt: str) -> tuple[str, int, int]:
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def _preserve_passthrough_fields(result: dict, cv_data: dict) -> None:
-    """Copy fields that Claude may omit back into the result dict (in-place)."""
-    for field in ("dob", "linkedin", "website", "raw_text"):
+    """Copy fields that Claude may omit back into the result dict (in-place).
+
+    raw_text is intentionally excluded — it belongs only on parsed_cv and must
+    never be written onto an AI-generated output dict.
+    """
+    for field in ("dob", "linkedin", "website"):
         if not result.get(field) and cv_data.get(field):
             result[field] = cv_data[field]
     # Training entries — preserve if Claude omits them
