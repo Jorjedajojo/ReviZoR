@@ -1193,7 +1193,8 @@ def _extract_arabic_cv_via_claude(
     # Sensitive fields detection
     _SENSITIVE_RE_AR = re.compile(
         r"\b\d{8,}\b"
-        r"|(?i)\b(national\s+id|passport\s*(no|number|#)?|id\s*:|رقم\s*الهوية|رقم\s*جواز)"
+        r"|\b(national\s+id|passport\s*(no|number|#)?|id\s*:|رقم\s*الهوية|رقم\s*جواز)",
+        re.I,
     )
     _scan_ar = " ".join(filter(None, [cv_data.get("summary", ""), arabic_raw_text or ""]))
     if _SENSITIVE_RE_AR.search(_scan_ar):
@@ -1305,7 +1306,8 @@ def parse_cv(
     # Sensitive fields detection: scan free-text fields for ID/passport numbers or labels
     _SENSITIVE_RE = re.compile(
         r"\b\d{8,}\b"                          # 8+ consecutive digits (ID/passport number)
-        r"|(?i)\b(national\s+id|passport\s*(no|number|#)?|id\s*:|رقم\s*الهوية|رقم\s*جواز)"
+        r"|\b(national\s+id|passport\s*(no|number|#)?|id\s*:|رقم\s*الهوية|رقم\s*جواز)",
+        re.I,
     )
     _scan_targets = " ".join(filter(None, [
         cv_data.get("summary", ""),
