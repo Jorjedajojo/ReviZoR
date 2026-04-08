@@ -307,6 +307,22 @@ def _is_arabic(text: str) -> bool:
     return arabic_chars > 10
 
 
+def _is_likely_landline(number: str) -> bool:
+    """Return True if the number looks like a landline and should be dropped.
+
+    Rules (apply only when 2+ numbers found — single numbers are always kept):
+    - Numbers with a leading + are international format → always keep (return False)
+    - 9 or fewer digits total → treat as landline
+    Egyptian landlines: 02xxxxxxxx (Cairo, 10 digits total) or 03xxxxxxxx (Alex).
+    The 9-digit threshold is conservative; Egyptian mobiles are always 11 digits.
+    """
+    stripped = number.strip()
+    if stripped.startswith("+"):
+        return False
+    digits = re.sub(r"\D", "", stripped)
+    return len(digits) <= 9
+
+
 def _is_arabic_dominant(text: str) -> bool:
     """Return True if >30% of non-whitespace characters are Arabic script."""
     chars = [c for c in text if not c.isspace()]
@@ -425,7 +441,7 @@ def _extract_contact(header_text: str) -> dict:
 
     # Collect all phone numbers; deduplicate by normalised digit sequence
     _seen_digits: set[str] = set()
-    phones: list[str] = []
+    _all_phones: list[str] = []
     for _raw_ph in _PHONE_RE.findall(header_text):
         _p = _raw_ph.strip()
         if not _p:
@@ -435,7 +451,13 @@ def _extract_contact(header_text: str) -> dict:
             continue
         if _digits not in _seen_digits:
             _seen_digits.add(_digits)
-            phones.append(_p)
+            _all_phones.append(_p)
+    # Drop likely landlines only when 2+ numbers were found (keep single numbers always)
+    if len(_all_phones) >= 2:
+        _mobile_phones = [p for p in _all_phones if not _is_likely_landline(p)]
+        phones = _mobile_phones if _mobile_phones else _all_phones
+    else:
+        phones = _all_phones
     phone = " | ".join(phones)   # joined string for backward compatibility
 
     linkedin = ""
@@ -1149,6 +1171,18 @@ def _extract_arabic_cv_via_claude(
         "projects":       data.get("projects") or [],
         "raw_text":       arabic_raw_text,  # preserve original Arabic text
     }
+    # Sensitive fields detection
+    _SENSITIVE_RE_AR = re.compile(
+        r"\b\d{8,}\b"
+        r"|(?i)\b(national\s+id|passport\s*(no|number|#)?|id\s*:|رقم\s*الهوية|رقم\s*جواز)"
+    )
+    _scan_ar = " ".join(filter(None, [cv_data.get("summary", ""), arabic_raw_text or ""]))
+    if _SENSITIVE_RE_AR.search(_scan_ar):
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "sensitive_fields_detected: possible ID/passport number found in CV"
+        )
+        cv_data["sensitive_fields_detected"] = True
     return cv_data, in_tok, out_tok
 
 
@@ -1234,4 +1268,19 @@ def parse_cv(
     # Fallback: if no language section was detected, scan raw text for language names
     if not cv_data["languages"] and raw_text:
         cv_data["languages"] = _fallback_language_scan(raw_text)
+    # Sensitive fields detection: scan free-text fields for ID/passport numbers or labels
+    _SENSITIVE_RE = re.compile(
+        r"\b\d{8,}\b"                          # 8+ consecutive digits (ID/passport number)
+        r"|(?i)\b(national\s+id|passport\s*(no|number|#)?|id\s*:|رقم\s*الهوية|رقم\s*جواز)"
+    )
+    _scan_targets = " ".join(filter(None, [
+        cv_data.get("summary", ""),
+        cv_data.get("raw_text", ""),
+    ]))
+    if _SENSITIVE_RE.search(_scan_targets):
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "sensitive_fields_detected: possible ID/passport number found in CV"
+        )
+        cv_data["sensitive_fields_detected"] = True
     return cv_data, in_tok, out_tok

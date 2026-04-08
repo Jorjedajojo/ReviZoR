@@ -111,6 +111,7 @@ RULES:
 12. Always split skills into exactly two categories: "Core Competencies" (soft skills, leadership, management, communication, strategic thinking) and "Technical Competencies" (software, tools, platforms, programming languages, technical methods). Never use other category names.
 13. Preserve the candidate's professional title exactly as given in the "title" field. If no title exists, infer one from their most recent role (e.g. "Senior Internal Auditor | Finance & Risk Professional").
 14. Always write all output in English regardless of the original CV language. The input data has already been translated — maintain English throughout.
+15. NEVER include national ID numbers, passport numbers, age, or gender in the output. These are private and not appropriate for a CV unless explicitly required by the job posting.
 
 INPUT CV DATA:
 {json.dumps(_clean_for_prompt(cv_data), indent=2)}

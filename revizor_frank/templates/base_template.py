@@ -203,9 +203,12 @@ class BaseTemplate:
         )
         if phones:
             parts.append(" | ".join(phones))
-        for field in ("location", "linkedin", "website"):
-            if cv.get(field):
-                parts.append(cv[field])
+        if cv.get("location"):
+            parts.append(cv["location"])
+        if cv.get("linkedin"):
+            parts.append("LinkedIn")
+        if cv.get("website"):
+            parts.append(cv["website"])
         if cv.get("dob"):
             parts.append(f"DOB: {cv['dob']}")
         return "  |  ".join(parts)

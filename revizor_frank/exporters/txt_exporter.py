@@ -26,10 +26,12 @@ def export_txt(cv_data: dict, output_path: str) -> str:
     )
     if _phones:
         contact_parts.append(" | ".join(_phones))
-    for field in ("location", "linkedin", "website"):
-        val = cv_data.get(field, "")
-        if val:
-            contact_parts.append(val)
+    if cv_data.get("location"):
+        contact_parts.append(cv_data["location"])
+    if cv_data.get("linkedin"):
+        contact_parts.append("LinkedIn")
+    if cv_data.get("website"):
+        contact_parts.append(cv_data["website"])
     if cv_data.get("dob"):
         contact_parts.append(f"DOB: {cv_data['dob']}")
     if contact_parts:
