@@ -2871,29 +2871,18 @@ def _render_edit_cv_tab(include_linkedin: bool):
     if not st.session_state.get("edited_cv_text"):
         st.session_state.edited_cv_text = _cv_to_text(cv_source)
 
-    edited = st.text_area(
-        "CV Text",
-        value=st.session_state.edited_cv_text,
-        height=500,
-        key="cv_text_editor",
-        label_visibility="collapsed",
-    )
-
     btn_label = "✅ Apply edits & refresh LinkedIn" if include_linkedin else "✅ Apply edits"
-    if st.button(btn_label, type="primary"):
-        st.session_state.edited_cv_text = edited
 
-        # Merge edited text onto the existing structured dict — do NOT re-parse.
-        # Re-parsing plain text destroys structured fields (experience bullets,
-        # skills categories, education, training) that cannot be reconstructed.
+    def _do_apply_edits(edited_text: str) -> None:
+        """Shared handler for both top and bottom Apply Edits buttons."""
+        st.session_state.edited_cv_text = edited_text
+
         _edit_ok = False
         try:
             import copy
             _base = st.session_state.get("ai_cv_general") or st.session_state.get("offline_cv") or {}
             merged = copy.deepcopy(_base)
 
-            # Extract only the summary block from the edited text:
-            # first non-empty paragraph before any section heading.
             _summary_lines: list[str] = []
             _heading_re = re.compile(
                 r"^\s*(SUMMARY|PROFILE|OBJECTIVE|EXPERIENCE|EDUCATION|SKILLS|"
@@ -2902,15 +2891,14 @@ def _render_edit_cv_tab(include_linkedin: bool):
                 re.I,
             )
             _collecting = False
-            for _line in edited.splitlines():
+            for _line in edited_text.splitlines():
                 if not _line.strip():
                     if _collecting:
-                        break  # end of first paragraph
+                        break
                     continue
                 if _heading_re.match(_line):
                     if _collecting:
-                        break  # hit a section heading — stop
-                    # first non-blank line is already a heading; skip summary extraction
+                        break
                     break
                 _collecting = True
                 _summary_lines.append(_line.strip())
@@ -2919,7 +2907,6 @@ def _render_edit_cv_tab(include_linkedin: bool):
             if _extracted_summary:
                 merged["summary"] = _extracted_summary
 
-            # Preserve non-editable fields from original if missing in merged
             for _field in ("title", "dob", "linkedin", "website", "phones", "phone", "email", "raw_text"):
                 if not merged.get(_field) and _base.get(_field):
                     merged[_field] = _base[_field]
@@ -2955,6 +2942,24 @@ def _render_edit_cv_tab(include_linkedin: bool):
             st.info("LinkedIn refresh requires internet connection.")
         elif _edit_ok:
             st.success("Edits saved — downloads will use your edited CV.")
+
+    # ── Top Apply Edits button (reads current text area value from session state)
+    if st.button(btn_label, type="primary", key="apply_edits_top"):
+        _current = st.session_state.get("cv_text_editor",
+                                        st.session_state.get("edited_cv_text", ""))
+        _do_apply_edits(_current)
+
+    edited = st.text_area(
+        "CV Text",
+        value=st.session_state.edited_cv_text,
+        height=500,
+        key="cv_text_editor",
+        label_visibility="collapsed",
+    )
+
+    # ── Bottom Apply Edits button (convenience repeat)
+    if st.button(btn_label, type="primary", key="apply_edits_bottom"):
+        _do_apply_edits(edited)
 
 
 _TC_TEXT = """SERVICE TERMS — ReviZoR CV Revision Service

@@ -179,12 +179,7 @@ def export_docx(cv_data: dict, template_name: str, output_path: str,
             r_cat = p.add_run(f"{cat_name}: ")
             r_cat.bold = True
             r_cat.font.size = Pt(9.5)
-            if "technical" in cat_name.lower():
-                # Technical Competencies: pill-style with brackets
-                r_items = p.add_run("  ".join(f"[{i}]" for i in items))
-            else:
-                # Core Competencies: comma-separated
-                r_items = p.add_run(", ".join(items))
+            r_items = p.add_run(", ".join(items))
             r_items.font.size = Pt(9.5)
 
     # ── Certifications ────────────────────────────────────────────────────────
