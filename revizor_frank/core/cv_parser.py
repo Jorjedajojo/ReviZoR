@@ -88,8 +88,16 @@ def check_required_fields(cv_data: dict) -> list[str]:
                 missing.append(label)
         else:
             val = cv_data.get(field)
-            if not val:
-                missing.append(label)
+            # For list fields (experience, education), only flag if key is entirely
+            # absent (None). An empty list [] means the field parsed but found nothing —
+            # that is not the same as missing information.
+            # For scalar fields (name, email), empty string IS a genuine missing value.
+            if field in ("experience", "education"):
+                if val is None:
+                    missing.append(label)
+            else:
+                if not val:
+                    missing.append(label)
     return missing
 
 
