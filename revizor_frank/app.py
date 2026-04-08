@@ -1985,10 +1985,29 @@ def render_review_changes():
 
     st.divider()
 
+    # Build per-section flag lookup from ai_cv_general["flags"]
+    _ai_flags: list = (st.session_state.get("ai_cv_general") or {}).get("flags") or []
+    _flags_rendered: set = set()
+
     for key, dec in decisions.items():
         status = dec["status"]
         icon = "✅" if status == "approved" else "✏️" if status == "edited" else "⏳"
         label = dec["label"]
+
+        # Determine canonical section name for this decision key
+        if key.startswith("exp"):
+            _flag_section = "experience"
+        elif key.startswith("edu"):
+            _flag_section = "education"
+        else:
+            _flag_section = key  # summary, skills, certifications, training, languages
+
+        # Show AI flags for this section once, before the expander
+        if _ai_flags and _flag_section not in _flags_rendered:
+            for _flag in _ai_flags:
+                if (_flag.get("section") or "").lower() == _flag_section.lower():
+                    st.info(f"ℹ️ **AI Note — {_flag['section']}:** {_flag['issue']}")
+            _flags_rendered.add(_flag_section)
 
         with st.expander(f"{icon} {label}", expanded=(status == "pending")):
             if key in editing:

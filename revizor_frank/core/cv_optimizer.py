@@ -59,6 +59,7 @@ _CV_SCHEMA = {
     "training": [{"name": "string", "organisation": "string", "date": "string", "description": "string"}],
     "languages": ["string"],
     "projects": [{"name": "string", "description": "string", "technologies": ["string"]}],
+    "flags": [{"section": "string", "issue": "string — description of what was detected but not changed"}],
 }
 
 _LINKEDIN_SCHEMA = {
@@ -99,22 +100,24 @@ def _build_general_prompt(cv_data: dict) -> str:
 Your task: Transform the provided CV data into the best possible version for ATS systems and human readers.
 
 RULES:
-1. Fix ALL grammar, spelling, and punctuation errors
-2. Replace weak/passive verbs with strong action verbs (Led, Built, Drove, etc.)
-3. Quantify achievements wherever plausible — add realistic estimates if the candidate hasn't provided numbers (flag with ≈ prefix)
-4. Write summary in third-person implied (no "I", "my", "me") — 60-90 words
-5. Use consistent date format: "Mon YYYY" (e.g. Jan 2020, Present)
-6. Deduplicate and categorize skills logically
-7. Ensure all required ATS sections are present: Summary, Experience, Education, Skills
-8. Make every bullet start with a past-tense action verb (present tense for current role)
-9. Remove clichés: "team player", "results-driven", "self-starter", "detail-oriented"
-10. NEVER invent experience, companies, or degrees — only enhance what exists
-11. Preserve ALL training entries exactly — do not drop or invent training courses. Format each with name, organisation, date, and a one-line description of what was learned.
-12. Always split skills into exactly two categories: "Core Competencies" (soft skills, leadership, management, communication, strategic thinking) and "Technical Competencies" (software, tools, platforms, programming languages, technical methods). Never use other category names.
-13. Preserve the candidate's professional title exactly as given in the "title" field. If no title exists, infer one from their most recent role (e.g. "Senior Internal Auditor | Finance & Risk Professional").
-14. Always write all output in English regardless of the original CV language. The input data has already been translated — maintain English throughout.
-15. NEVER include national ID numbers, passport numbers, age, or gender in the output. These are private and not appropriate for a CV unless explicitly required by the job posting.
-16. Preserve neighbourhood, location, and military_status fields exactly as provided — do not modify or infer them.
+1. Fix ALL grammar, spelling, and punctuation errors.
+2. Replace weak/passive verbs with strong action verbs (Led, Built, Drove, Delivered, etc.).
+3. Quantify achievements wherever plausible — add realistic estimates flagged with ≈ prefix. NEVER invent specifics.
+4. Write summary as: professional journey + key competencies + top achievements. Third-person implied (no "I", "my", "me"). 60–100 words.
+5. Use consistent date format: "Mon YYYY" (e.g. Jan 2020). Use "Present" for current roles.
+6. NEVER invent experience, companies, degrees, or certifications — only improve what exists.
+7. Preserve ALL training, certification, and project entries exactly — do not drop any.
+8. Skills MUST be split into exactly two categories: "Core Competencies" (leadership, management, communication, strategy, interpersonal) and "Technical Competencies" (software, tools, platforms, systems, technical methods). No other category names permitted.
+9. Core Competencies must always appear BEFORE Technical Competencies in the output.
+10. Experience entries must be ordered most recent first.
+11. Education entries must be ordered most recent first.
+12. Preserve the candidate's professional title exactly. If absent, infer from most recent role.
+13. Phone: preserve all mobile numbers with country code. If a number has no country code, do not add one — flag it with a ≈ prefix in the phone field.
+14. LinkedIn: store the profile URL or username exactly as provided. Do not reformat.
+15. NEVER include national ID numbers, passport numbers, age, or gender in the output unless the job posting explicitly requires it.
+16. Preserve neighbourhood, military_status, dob, and nationality fields exactly as provided — do not infer, modify, or remove them.
+17. Always write all output in English. The input has already been translated if needed.
+18. HIGHLIGHT — do not fix — any section where content appears incomplete, inconsistent, or where information seems missing. Flag these sections in the "flags" array: [{{"section": "experience", "issue": "description of what was detected but not changed"}}]. The co-worker reviews flags before finalising.
 
 INPUT CV DATA:
 {json.dumps(_clean_for_prompt(cv_data), indent=2)}
@@ -231,6 +234,7 @@ def optimize_general(cv_data: dict) -> tuple[dict, int, int]:
     prompt = _build_general_prompt(cv_data)
     raw, input_tokens, output_tokens = _call_claude(prompt)
     result = _extract_json(raw)
+    result.setdefault("flags", [])
     _preserve_passthrough_fields(result, cv_data)
     return result, input_tokens, output_tokens
 
@@ -240,6 +244,7 @@ def optimize_jd_tailored(cv_data: dict, job_description: str, general_cv: dict) 
     prompt = _build_jd_prompt(cv_data, job_description, general_cv)
     raw, input_tokens, output_tokens = _call_claude(prompt)
     result = _extract_json(raw)
+    result.setdefault("flags", [])
     _preserve_passthrough_fields(result, cv_data)
     return result, input_tokens, output_tokens
 
