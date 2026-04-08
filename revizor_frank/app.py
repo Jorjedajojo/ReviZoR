@@ -925,8 +925,7 @@ def render_upload_certs():
     _missing = st.session_state.get("missing_fields") or []
     if _missing:
         st.warning(
-            "The following information is missing from this CV. "
-            "Please request it from the candidate before proceeding.\n\n"
+            "The following sections were not detected in the uploaded CV:\n\n"
             + "\n".join(f"- {f}" for f in _missing)
         )
 
@@ -1934,9 +1933,9 @@ def render_review_changes():
     # ── Missing fields banners ────────────────────────────────────────────────
     if st.session_state.get("missing_fields"):
         st.warning(
-            "⚠️ The following required information is missing from this CV: "
+            "⚠️ The following sections were not detected in the uploaded CV: "
             + ", ".join(st.session_state.missing_fields)
-            + ". Use the button below to request it from the client."
+            + "."
         )
         if st.button("📤 Request missing info from client", key="req_missing"):
             auto_questions = [
