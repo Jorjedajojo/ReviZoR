@@ -535,6 +535,20 @@ def _extract_contact(header_text: str) -> dict:
     if dob_m:
         dob = dob_m.group(1).strip()
 
+    # Neighbourhood: explicit label, or first component of a 3-part address
+    neighbourhood = ""
+    _NEIGH_RE = re.compile(
+        r"(?:neighbourhood|neighborhood|district|area|zone|حي|منطقة)\s*:?\s*([^\n,|]{2,40})",
+        re.I,
+    )
+    neigh_m = _NEIGH_RE.search(header_text)
+    if neigh_m:
+        neighbourhood = neigh_m.group(1).strip()
+    elif location:
+        _loc_parts = [p.strip() for p in location.split(",")]
+        if len(_loc_parts) >= 3:
+            neighbourhood = _loc_parts[0]
+
     return {
         "name": name,
         "title": title,
@@ -542,6 +556,7 @@ def _extract_contact(header_text: str) -> dict:
         "phones": phones,            # list — primary; one item per unique number
         "phone": phone,              # joined string — backward-compat for optimizer/templates
         "location": location,
+        "neighbourhood": neighbourhood,
         "linkedin": linkedin,
         "website": website,
         "dob": dob,
@@ -1055,6 +1070,8 @@ def _extract_arabic_cv_via_claude(
         '  "linkedin": "linkedin URL or username",\n'
         '  "website": "website URL",\n'
         '  "dob": "date of birth",\n'
+        '  "neighbourhood": "district or neighbourhood name in English if present",\n'
+        '  "military_status": "military service status in English if present (e.g. Exempted, Completed)",\n'
         '  "nationality": "nationality in English",\n'
         '  "summary": "Professional summary translated into fluent English",\n'
         '  "experience": [\n'
@@ -1160,6 +1177,8 @@ def _extract_arabic_cv_via_claude(
         "linkedin":       data.get("linkedin", ""),
         "website":        data.get("website", ""),
         "dob":            data.get("dob", ""),
+        "neighbourhood":  data.get("neighbourhood", ""),
+        "military_status": data.get("military_status", ""),
         "nationality":    data.get("nationality", ""),
         "summary":        data.get("summary", ""),
         "experience":     data.get("experience") or [],
@@ -1246,9 +1265,24 @@ def parse_cv(
                 dob = _m.group(1).strip()
                 break
 
+    # Military status: scan full raw text for service phrases
+    military_status = ""
+    _MIL_RE = re.compile(
+        r"(?:military\s+(?:service|status)\s*[:\-]?\s*\S[^\n]*"
+        r"|(?:exempted|completed|postponed|fulfilled)\s+(?:from\s+)?military[^\n]*"
+        r"|خدمة\s*عسكرية[^\n]*"
+        r"|معفي[^\n]*"
+        r"|أدى\s+الخدمة[^\n]*)",
+        re.I,
+    )
+    mil_m = _MIL_RE.search(raw_text)
+    if mil_m:
+        military_status = mil_m.group(0).strip()
+
     cv_data: dict = {
         **contact,
         "dob":            dob,
+        "military_status": military_status,
         "summary":        sections.get("summary", "").strip(),
         "experience":     _parse_experience(sections.get("experience", "")),
         "education":      _parse_education(sections.get("education", "")),

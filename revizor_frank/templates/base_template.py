@@ -209,8 +209,6 @@ class BaseTemplate:
             parts.append("LinkedIn")
         if cv.get("website"):
             parts.append(cv["website"])
-        if cv.get("dob"):
-            parts.append(f"DOB: {cv['dob']}")
         return "  |  ".join(parts)
 
     def _safe_para(self, text: str, style: ParagraphStyle) -> Paragraph:
@@ -255,12 +253,24 @@ class BaseTemplate:
         contact_line = self._contact_line(cv)
         if contact_line:
             story.append(Paragraph(contact_line, cs))
+        if cv.get("dob"):
+            story.append(Paragraph(f"Date of Birth: {cv['dob']}", cs))
         story.append(Spacer(1, 8))
 
         # ── Summary ───────────────────────────────────────────────────────────
         if cv.get("summary"):
             story.extend(self._section_heading("Professional Summary"))
             story.append(self._safe_para(cv["summary"], bs))
+
+        # ── Skills ────────────────────────────────────────────────────────────
+        if cv.get("skills", {}).get("categories"):
+            story.extend(self._section_heading("Core & Technical Competencies"))
+            for cat in cv["skills"]["categories"]:
+                items = cat.get("items", [])
+                if not items:
+                    continue
+                cat_name = cat.get("name", "Skills")
+                story.append(Paragraph(f"<b>{cat_name}:</b>  {', '.join(items)}", bs))
 
         # ── Experience ────────────────────────────────────────────────────────
         if cv.get("experience"):
@@ -306,22 +316,6 @@ class BaseTemplate:
                     block.append(Paragraph(gpa, muted))
                 block.append(Spacer(1, 3))
                 story.append(KeepTogether(block))
-
-        # ── Skills ────────────────────────────────────────────────────────────
-        if cv.get("skills", {}).get("categories"):
-            story.extend(self._section_heading("Skills"))
-            for cat in cv["skills"]["categories"]:
-                items = cat.get("items", [])
-                if not items:
-                    continue
-                cat_name = cat.get("name", "Skills")
-                if "technical" in cat_name.lower():
-                    # Technical Competencies: pill-style with brackets
-                    pills = "  ".join(f"[{item}]" for item in items)
-                    story.append(Paragraph(f"<b>{cat_name}:</b>  {pills}", bs))
-                else:
-                    # Core Competencies: comma-separated paragraph
-                    story.append(Paragraph(f"<b>{cat_name}:</b>  {', '.join(items)}", bs))
 
         # ── Certifications ────────────────────────────────────────────────────
         if cv.get("certifications"):

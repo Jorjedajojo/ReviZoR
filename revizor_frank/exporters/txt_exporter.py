@@ -32,10 +32,10 @@ def export_txt(cv_data: dict, output_path: str) -> str:
         contact_parts.append("LinkedIn")
     if cv_data.get("website"):
         contact_parts.append(cv_data["website"])
-    if cv_data.get("dob"):
-        contact_parts.append(f"DOB: {cv_data['dob']}")
     if contact_parts:
         lines.append(" | ".join(contact_parts))
+    if cv_data.get("dob"):
+        lines.append(f"Date of Birth: {cv_data['dob']}")
     lines.append("")
 
     # ── Summary ───────────────────────────────────────────────────────────────
@@ -43,6 +43,16 @@ def export_txt(cv_data: dict, output_path: str) -> str:
         lines.append("PROFESSIONAL SUMMARY")
         lines.append(_divider("-"))
         lines.append(cv_data["summary"])
+        lines.append("")
+
+    # ── Skills ────────────────────────────────────────────────────────────────
+    if cv_data.get("skills", {}).get("categories"):
+        lines.append("CORE & TECHNICAL COMPETENCIES")
+        lines.append(_divider("-"))
+        for cat in cv_data["skills"]["categories"]:
+            items = ", ".join(cat.get("items", []))
+            if items:
+                lines.append(f"{cat['name']}: {items}")
         lines.append("")
 
     # ── Experience ────────────────────────────────────────────────────────────
@@ -83,16 +93,6 @@ def export_txt(cv_data: dict, output_path: str) -> str:
             if edu.get("gpa"):
                 lines.append(f"  {edu['gpa']}")
             lines.append("")
-
-    # ── Skills ────────────────────────────────────────────────────────────────
-    if cv_data.get("skills", {}).get("categories"):
-        lines.append("SKILLS")
-        lines.append(_divider("-"))
-        for cat in cv_data["skills"]["categories"]:
-            items = ", ".join(cat.get("items", []))
-            if items:
-                lines.append(f"{cat['name']}: {items}")
-        lines.append("")
 
     # ── Certifications ────────────────────────────────────────────────────────
     if cv_data.get("certifications"):

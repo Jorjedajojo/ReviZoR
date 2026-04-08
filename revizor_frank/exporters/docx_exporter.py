@@ -81,12 +81,14 @@ def export_docx(cv_data: dict, template_name: str, output_path: str,
         contact_parts.append("LinkedIn")
     if cv_data.get("website"):
         contact_parts.append(cv_data["website"])
-    if cv_data.get("dob"):
-        contact_parts.append(f"DOB: {cv_data['dob']}")
     if contact_parts:
         cp = doc.add_paragraph("  |  ".join(contact_parts))
         cp.runs[0].font.size = Pt(9)
         _set_run_color(cp.runs[0], "666666")
+    if cv_data.get("dob"):
+        dob_p = doc.add_paragraph(f"Date of Birth: {cv_data['dob']}")
+        dob_p.runs[0].font.size = Pt(9)
+        _set_run_color(dob_p.runs[0], "666666")
 
     def add_section_heading(title: str):
         p = doc.add_paragraph()
@@ -117,6 +119,21 @@ def export_docx(cv_data: dict, template_name: str, output_path: str,
     if cv_data.get("summary"):
         add_section_heading("Professional Summary")
         add_body(cv_data["summary"])
+
+    # ── Skills ────────────────────────────────────────────────────────────────
+    if cv_data.get("skills", {}).get("categories"):
+        add_section_heading("Core & Technical Competencies")
+        for cat in cv_data["skills"]["categories"]:
+            items = cat.get("items", [])
+            if not items:
+                continue
+            cat_name = cat.get("name", "Skills")
+            p = doc.add_paragraph()
+            r_cat = p.add_run(f"{cat_name}: ")
+            r_cat.bold = True
+            r_cat.font.size = Pt(9.5)
+            r_items = p.add_run(", ".join(items))
+            r_items.font.size = Pt(9.5)
 
     # ── Experience ────────────────────────────────────────────────────────────
     if cv_data.get("experience"):
@@ -168,21 +185,6 @@ def export_docx(cv_data: dict, template_name: str, output_path: str,
                 add_body(edu["honors"], color="555555", size=9.0)
             if edu.get("gpa"):
                 add_body(edu["gpa"], color="555555", size=9.0)
-
-    # ── Skills ────────────────────────────────────────────────────────────────
-    if cv_data.get("skills", {}).get("categories"):
-        add_section_heading("Skills")
-        for cat in cv_data["skills"]["categories"]:
-            items = cat.get("items", [])
-            if not items:
-                continue
-            cat_name = cat.get("name", "Skills")
-            p = doc.add_paragraph()
-            r_cat = p.add_run(f"{cat_name}: ")
-            r_cat.bold = True
-            r_cat.font.size = Pt(9.5)
-            r_items = p.add_run(", ".join(items))
-            r_items.font.size = Pt(9.5)
 
     # ── Certifications ────────────────────────────────────────────────────────
     if cv_data.get("certifications"):

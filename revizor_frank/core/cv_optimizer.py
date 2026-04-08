@@ -24,8 +24,10 @@ _CV_SCHEMA = {
     "email": "string",
     "phone": "string (all phone numbers pipe-separated, e.g. +20123456789 | +447521002142)",
     "location": "string",
+    "neighbourhood": "string (district/area within the city, if provided — preserve exactly)",
     "linkedin": "string",
     "website": "string",
+    "military_status": "string (military service status if provided, e.g. 'Exempted', 'Completed' — preserve exactly, leave empty if absent)",
     "summary": "string (50-100 words, third-person implied, no first-person pronouns)",
     "experience": [
         {
@@ -112,6 +114,7 @@ RULES:
 13. Preserve the candidate's professional title exactly as given in the "title" field. If no title exists, infer one from their most recent role (e.g. "Senior Internal Auditor | Finance & Risk Professional").
 14. Always write all output in English regardless of the original CV language. The input data has already been translated — maintain English throughout.
 15. NEVER include national ID numbers, passport numbers, age, or gender in the output. These are private and not appropriate for a CV unless explicitly required by the job posting.
+16. Preserve neighbourhood, location, and military_status fields exactly as provided — do not modify or infer them.
 
 INPUT CV DATA:
 {json.dumps(_clean_for_prompt(cv_data), indent=2)}
@@ -214,7 +217,7 @@ def _preserve_passthrough_fields(result: dict, cv_data: dict) -> None:
     raw_text is intentionally excluded — it belongs only on parsed_cv and must
     never be written onto an AI-generated output dict.
     """
-    for field in ("dob", "linkedin", "website"):
+    for field in ("dob", "linkedin", "website", "neighbourhood", "military_status"):
         if not result.get(field) and cv_data.get(field):
             result[field] = cv_data[field]
     # Training entries — preserve if Claude omits them
