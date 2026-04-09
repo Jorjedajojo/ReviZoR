@@ -388,6 +388,7 @@ def close_owner_questions(row_id: str) -> bool:
 def save_session(username: str, state: dict) -> bool:
     """Upsert session state for a user in saved_sessions table.
 
+    Each CV session is stored as a separate row keyed on session_id.
     Writes both the canonical session_data JSONB blob and the denormalised
     individual columns so that admin queries can filter without deserialising.
     """
@@ -408,6 +409,11 @@ def save_session(username: str, state: dict) -> bool:
         def _safe(v):
             return v if _serializable(v) else None
 
+        # Ensure session_id is always set
+        session_id = str(state.get("session_id") or "")
+        if not session_id:
+            session_id = f"{username}_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+
         # ── Canonical session_data blob (keys required by brief) ─────────────
         session_data = {
             "original_cv":       _safe(state.get("parsed_cv")),
@@ -418,12 +424,15 @@ def save_session(username: str, state: dict) -> bool:
             "questions_list":    _safe(state.get("questions_list")) or [],
         }
 
+        _stage = state.get("stage") or ""
         payload = {
             "username":        username,
             "updated_at":      datetime.now(timezone.utc).isoformat(),
-            "session_id":      str(state.get("session_id") or ""),
-            "stage":           state.get("stage"),
+            "session_id":      session_id,
+            "stage":           _stage,
             "filename":        state.get("filename"),
+            "display_name":    state.get("filename") or "Untitled CV",
+            "is_complete":     _stage in ("results", "select_template"),
             "session_data":    session_data,
             # denormalised columns for admin queries
             "parsed_cv":       _safe(state.get("parsed_cv")),
@@ -440,7 +449,7 @@ def save_session(username: str, state: dict) -> bool:
             "error_log":       _safe(state.get("error_log") or []),
         }
         client.table("saved_sessions").upsert(
-            payload, on_conflict="username"
+            payload, on_conflict="session_id"
         ).execute()
         return True
     except Exception as e:
@@ -448,26 +457,42 @@ def save_session(username: str, state: dict) -> bool:
         return False
 
 
-def load_session(username: str) -> dict | None:
-    """Load the most recent saved session for a user."""
+def load_session(username: str, session_id: str | None = None) -> dict | None:
+    """Load a specific session by session_id, or the most recent if not specified."""
     client = _get_client()
     if client is None:
         return None
     try:
-        r = (
-            client.table("saved_sessions")
-            .select("*")
-            .eq("username", username)
-            .order("updated_at", desc=True)
-            .limit(1)
-            .execute()
-        )
-        if r.data:
-            return r.data[0]
-        return None
+        q = client.table("saved_sessions").select("*").eq("username", username)
+        if session_id:
+            q = q.eq("session_id", session_id)
+        else:
+            q = q.order("updated_at", desc=True).limit(1)
+        r = q.execute()
+        return r.data[0] if r.data else None
     except Exception as e:
         logger.warning("load_session failed: %s", e)
         return None
+
+
+def list_sessions(username: str) -> list[dict]:
+    """Return all saved sessions for a user, most recent first (max 20)."""
+    client = _get_client()
+    if client is None:
+        return []
+    try:
+        r = (
+            client.table("saved_sessions")
+            .select("session_id, filename, display_name, stage, updated_at, is_complete")
+            .eq("username", username)
+            .order("updated_at", desc=True)
+            .limit(20)
+            .execute()
+        )
+        return r.data or []
+    except Exception as e:
+        logger.warning("list_sessions failed: %s", e)
+        return []
 
 
 def get_incomplete_sessions() -> list[dict]:

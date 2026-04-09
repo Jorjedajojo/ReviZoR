@@ -133,42 +133,19 @@ def render_simple_login():
                 st.session_state.simple_auth_time = datetime.now(timezone.utc)
                 st.session_state.simple_auth_user = username.strip().lower()
                 st.session_state.user_role        = role
-                # Restore previous session data if available
+                # Load session history for this user — show picker if sessions exist
                 try:
                     from revizor_frank.storage import supabase_db as _sdb
-                    _saved = _sdb.load_session(username.strip().lower())
-                    if _saved:
-                        # Individual columns (denormalised store)
-                        _restorable = [
-                            "parsed_cv", "ai_cv_general", "ai_cv_jd", "offline_cv",
-                            "linkedin_data", "job_description", "service_tier",
-                            "selected_template", "template_color",
-                            "filename", "ats_report",
-                        ]
-                        for _key in _restorable:
-                            if _saved.get(_key) and not st.session_state.get(_key):
-                                st.session_state[_key] = _saved[_key]
-
-                        # Keys from session_data blob (required fields per brief)
-                        _sd = _saved.get("session_data") or {}
-                        if _sd.get("missing_fields") and not st.session_state.get("missing_fields"):
-                            st.session_state.missing_fields = _sd["missing_fields"]
-                        if _sd.get("questions_list") and not st.session_state.get("questions_list"):
-                            st.session_state.questions_list = _sd["questions_list"]
-
-                        # Restore session_id; flag that parse already happened
-                        if _saved.get("session_id"):
-                            st.session_state.session_id = _saved["session_id"]
-                        if _saved.get("parsed_cv"):
-                            # Parsed data is present — skip re-parsing for this session_id
-                            st.session_state.session_already_parsed = True
-
-                        # NEVER restore stage — always land on select_service
-                        st.session_state.stage = "select_service"
-                        # Set banner flag (shown once; dismissed by user)
-                        st.session_state.session_restored_banner = True
+                    _sessions = _sdb.list_sessions(username.strip().lower())
                 except Exception:
-                    pass
+                    _sessions = []
+
+                if _sessions:
+                    st.session_state.pending_session_list = _sessions
+                    st.session_state.show_session_picker = True
+                # Always land on select_service — picker shown there
+                st.session_state.stage = "select_service"
+                st.session_state.session_restored_banner = False
                 st.rerun()
             else:
                 # Small delay to further slow brute-force attempts
@@ -293,6 +270,10 @@ def _init_state():
         # Session persistence
         "session_already_parsed":  False,  # True when parsed_cv was restored from Supabase
         "session_restored_banner": False,  # True when a previous session was loaded on login
+        "last_autosave":           None,   # datetime of last timer-based autosave
+        # Session picker (multi-session history)
+        "show_session_picker":     False,
+        "pending_session_list":    [],
         # Error log
         "error_log":          [],   # [{code, detail, stage, timestamp}]
     }
@@ -740,6 +721,61 @@ def render_sidebar():
 def render_select_service():
     _render_top_nav()
     st.markdown(f"# 📄 {APP_NAME}")
+
+    # ── Session picker (shown after login when history exists) ────────────────
+    if st.session_state.get("show_session_picker") and st.session_state.get("pending_session_list"):
+        sessions = st.session_state.pending_session_list
+
+        st.markdown("### 📂 Your Previous CV Sessions")
+        st.caption("Select a session to continue where you left off, or start a new CV below.")
+
+        for s in sessions:
+            label   = s.get("display_name") or s.get("filename") or "Untitled CV"
+            stage   = s.get("stage", "unknown").replace("_", " ").title()
+            updated = s.get("updated_at", "")[:16].replace("T", " ")
+            status  = "✅ Complete" if s.get("is_complete") else f"⏸ Stopped at: {stage}"
+            col_a, col_b = st.columns([4, 1])
+            with col_a:
+                st.markdown(f"**{label}** &nbsp;·&nbsp; {status} &nbsp;·&nbsp; Last saved: {updated}")
+            with col_b:
+                if st.button("Resume", key=f"resume_{s['session_id']}"):
+                    try:
+                        from revizor_frank.storage import supabase_db as _sdb
+                        _saved = _sdb.load_session(
+                            st.session_state.simple_auth_user,
+                            session_id=s["session_id"],
+                        )
+                        if _saved:
+                            _restorable = [
+                                "parsed_cv", "ai_cv_general", "ai_cv_jd", "offline_cv",
+                                "linkedin_data", "job_description", "service_tier",
+                                "selected_template", "template_color", "filename",
+                                "ats_report", "session_id", "review_decisions",
+                                "questions_list", "missing_fields", "edited_cv",
+                            ]
+                            for _key in _restorable:
+                                if _saved.get(_key):
+                                    st.session_state[_key] = _saved[_key]
+                            _sd = _saved.get("session_data") or {}
+                            for _key in ("missing_fields", "questions_list", "selected_template"):
+                                if _sd.get(_key):
+                                    st.session_state[_key] = _sd[_key]
+                            if _saved.get("parsed_cv"):
+                                st.session_state.session_already_parsed = True
+                            st.session_state.session_restored_banner = True
+                            st.session_state.show_session_picker = False
+                            st.session_state.stage = "select_service"
+                            st.rerun()
+                    except Exception:
+                        st.error("Could not load that session. Please try again.")
+
+        st.divider()
+        if st.button("🆕 Start a new CV instead", use_container_width=False):
+            st.session_state.show_session_picker = False
+            st.session_state.pending_session_list = []
+            st.rerun()
+
+        st.stop()  # Don't render service cards until user makes a choice
 
     # ── Session-restored banner (shown once after login; dismissed by button) ─
     if st.session_state.get("session_restored_banner"):
@@ -3572,6 +3608,7 @@ def main():
     # ── Auth gate: simple username/password mode ──────────────────────────────
     if SIMPLE_AUTH:
         if not _simple_auth_valid():
+            _autosave_session()  # save before session is dropped
             render_simple_login()
             return
 
@@ -3581,6 +3618,13 @@ def main():
             st.session_state.auth_token = None
             render_login()
             return
+
+    # ── Timer-based autosave (every 60 s, regardless of stage) ───────────────
+    _now_as = datetime.now(timezone.utc)
+    _last_as = st.session_state.get("last_autosave")
+    if _last_as is None or (_now_as - _last_as).total_seconds() > 60:
+        _autosave_session()
+        st.session_state.last_autosave = _now_as
 
     # URL stage sync intentionally removed — reading the browser URL to set
     # session state caused browser back to re-route into login. Navigation is
