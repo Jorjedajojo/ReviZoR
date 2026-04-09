@@ -293,6 +293,8 @@ def _init_state():
         # Session persistence
         "session_already_parsed":  False,  # True when parsed_cv was restored from Supabase
         "session_restored_banner": False,  # True when a previous session was loaded on login
+        # Error log
+        "error_log":          [],   # [{code, detail, stage, timestamp}]
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -1339,7 +1341,15 @@ def _run_pipeline():
         progress.empty()
         status.empty()
         st.session_state.stage = "upload"
-        st.error(f"{S['err_parse_failed']} — {e}")
+        _err_str = str(e)
+        _err_code = _err_str[:10] if _err_str.startswith("[RVZ-") else "RVZ-U001"
+        st.session_state.setdefault("error_log", []).append({
+            "code": _err_code,
+            "detail": _err_str,
+            "stage": st.session_state.get("stage", "processing"),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+        st.error(f"**{_err_code}** — {_err_str}")
 
 
 # ── Mandatory fields check ───────────────────────────────────────────────────
@@ -1920,6 +1930,16 @@ def render_review_changes():
     decisions: dict = st.session_state.review_decisions
     editing: list   = st.session_state.get("review_editing", [])
     total    = len(decisions)
+
+    if total == 0:
+        from revizor_frank.core.errors import raise_rvz as _raise_rvz
+        _n2 = _raise_rvz("RVZ-N002", detail="Finalise reached with 0 sections — cv_data likely empty")
+        st.error(
+            f"[{_n2.code}] No sections to review. "
+            "The CV may not have been parsed correctly. Please go back and re-upload."
+        )
+        st.stop()
+
     approved = sum(1 for d in decisions.values() if d["status"] in ("approved", "edited"))
     all_done = (approved == total)
 
@@ -3020,8 +3040,8 @@ def render_admin_dashboard():
     st.markdown("# 🛠 Admin Dashboard")
     st.divider()
 
-    tab_pl, tab_pending, tab_incomplete, tab_tc = st.tabs([
-        "📊 P&L / Runs", "⏰ Pending Responses", "⚠️ Incomplete CVs", "📋 T&C Draft"
+    tab_pl, tab_pending, tab_incomplete, tab_errors, tab_tc = st.tabs([
+        "📊 P&L / Runs", "⏰ Pending Responses", "⚠️ Incomplete CVs", "🔴 Error Log", "📋 T&C Draft"
     ])
 
     with tab_pl:
@@ -3227,6 +3247,36 @@ def render_admin_dashboard():
                     st.markdown("**Missing fields:**")
                     for mf in missing:
                         st.write(f"• {mf}")
+
+    with tab_errors:
+        st.markdown("### 🔴 Error Log")
+        st.caption("Sessions that produced at least one classified error during this deployment.")
+        try:
+            from revizor_frank.storage import supabase_db as _sdb_err
+            _err_rows = _sdb_err.get_sessions_with_errors()
+        except Exception as _e:
+            st.error(f"Could not load error log: {_e}")
+            _err_rows = []
+        if not _err_rows:
+            st.success("No errors recorded.")
+        else:
+            for _erow in _err_rows:
+                _eu = _erow.get("username", "—")
+                _ef = _erow.get("filename", "—")
+                _es = _erow.get("stage", "—")
+                _et = (_erow.get("updated_at") or "")[:19]
+                _elog = _erow.get("error_log") or []
+                with st.expander(f"🔴 {_eu}  |  {_ef}  |  {_et}"):
+                    for _entry in _elog:
+                        _col1, _col2, _col3 = st.columns([1, 2, 5])
+                        with _col1:
+                            st.code(_entry.get("code", "?"), language=None)
+                        with _col2:
+                            st.caption(_entry.get("timestamp", "")[:19])
+                            st.caption(f"Stage: {_entry.get('stage', '—')}")
+                        with _col3:
+                            st.markdown(_entry.get("detail", ""))
+                        st.divider()
 
     with tab_tc:
         st.markdown("### T&C Reference Draft")

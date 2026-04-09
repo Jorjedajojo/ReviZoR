@@ -70,6 +70,7 @@ Table schema (run once in your Supabase SQL editor):
     -- If upgrading an existing saved_sessions table that lacks session_data:
     -- ALTER TABLE saved_sessions ADD COLUMN IF NOT EXISTS session_data JSONB;
     -- ALTER TABLE saved_sessions ADD COLUMN IF NOT EXISTS session_id TEXT;
+    -- ALTER TABLE saved_sessions ADD COLUMN IF NOT EXISTS error_log JSONB;
 
 Pricing model (claude-sonnet-4-6):
   Input:  $3.00 per 1,000,000 tokens
@@ -436,6 +437,7 @@ def save_session(username: str, state: dict) -> bool:
             "template_color":  state.get("template_color"),
             "ats_report":      _safe(state.get("ats_report")),
             "missing_fields":  state.get("missing_fields"),
+            "error_log":       _safe(state.get("error_log") or []),
         }
         client.table("saved_sessions").upsert(
             payload, on_conflict="username"
@@ -486,6 +488,27 @@ def get_incomplete_sessions() -> list[dict]:
         ]
     except Exception as e:
         logger.warning("get_incomplete_sessions failed: %s", e)
+        return []
+
+
+def get_sessions_with_errors() -> list[dict]:
+    """Return saved_sessions rows where error_log is a non-empty list."""
+    client = _get_client()
+    if client is None:
+        return []
+    try:
+        r = (
+            client.table("saved_sessions")
+            .select("username, stage, filename, error_log, updated_at, session_id")
+            .order("updated_at", desc=True)
+            .execute()
+        )
+        return [
+            row for row in (r.data or [])
+            if row.get("error_log")  # non-null and non-empty list
+        ]
+    except Exception as e:
+        logger.warning("get_sessions_with_errors failed: %s", e)
         return []
 
 

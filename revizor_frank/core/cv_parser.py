@@ -38,6 +38,8 @@ from typing import BinaryIO
 
 import anthropic
 
+from revizor_frank.core.errors import raise_rvz
+
 
 # ── Required fields ───────────────────────────────────────────────────────────
 # Fields that must be present for a CV to be considered complete.
@@ -216,7 +218,10 @@ def extract_text_from_docx(file: BinaryIO) -> str:
         for row in table.rows:
             for cell in row.cells:
                 parts.append(cell.text)
-    return "\n".join(parts)
+    text = "\n".join(parts)
+    if len(text.strip()) < 50:
+        raise_rvz("RVZ-P001", detail=f"Extracted only {len(text.strip())} chars from DOCX")
+    return text
 
 
 def extract_text_from_txt(file: BinaryIO) -> str:
@@ -1219,6 +1224,24 @@ def parse_cv(
 
     Raises NonCVDocumentError if the document appears to be a job offer / JD.
     """
+    try:
+      return _parse_cv_inner(file, filename, api_key=api_key, check_doc_type=check_doc_type)
+    except NonCVDocumentError:
+        raise
+    except Exception as _e:
+        err = raise_rvz("RVZ-U001", detail=f"parse_cv failed for {filename}: {_e}", exc=_e)
+        raise ValueError(
+            f"[{err.code}] Could not parse the uploaded file — {err.message}. Detail: {_e}"
+        ) from _e
+
+
+def _parse_cv_inner(
+    file: BinaryIO,
+    filename: str,
+    api_key: str = "",
+    check_doc_type: bool = True,
+) -> tuple[dict, int, int]:
+    """Internal implementation of parse_cv — see parse_cv for full docstring."""
     # Buffer file bytes so we can pass PDF data to Claude if Arabic is detected.
     # This must happen before extract_text() consumes the file pointer.
     _file_bytes = file.read()
@@ -1254,6 +1277,9 @@ def parse_cv(
             )
 
     sections = _split_into_sections(raw_text)
+    non_header = [k for k in sections if k != "header"]
+    if not non_header:
+        raise_rvz("RVZ-E003", detail=f"Sections found: {list(sections.keys())}")
     contact = _extract_contact(sections.get("header", ""))
 
     # DOB: prefer header extraction; fall back to scanning full raw_text
@@ -1268,15 +1294,19 @@ def parse_cv(
 
     # Military status: scan full raw text for service phrases
     military_status = ""
-    _MIL_RE = re.compile(
-        r"(?:military\s+(?:service|status)\s*[:\-]?\s*\S[^\n]*"
-        r"|(?:exempted|completed|postponed|fulfilled)\s+(?:from\s+)?military[^\n]*"
-        r"|خدمة\s*عسكرية[^\n]*"
-        r"|معفي[^\n]*"
-        r"|أدى\s+الخدمة[^\n]*)",
-        re.I,
-    )
-    mil_m = _MIL_RE.search(raw_text)
+    try:
+        _MIL_RE = re.compile(
+            r"(?:military\s+(?:service|status)\s*[:\-]?\s*\S[^\n]*"
+            r"|(?:exempted|completed|postponed|fulfilled)\s+(?:from\s+)?military[^\n]*"
+            r"|خدمة\s*عسكرية[^\n]*"
+            r"|معفي[^\n]*"
+            r"|أدى\s+الخدمة[^\n]*)",
+            re.I,
+        )
+        mil_m = _MIL_RE.search(raw_text)
+    except re.error as _mil_err:
+        raise_rvz("RVZ-P005", detail=f"Pattern: military_re — {_mil_err}", exc=_mil_err)
+        mil_m = None
     if mil_m:
         military_status = mil_m.group(0).strip()
 
