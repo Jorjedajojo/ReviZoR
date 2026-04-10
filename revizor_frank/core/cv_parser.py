@@ -487,21 +487,43 @@ def _extract_contact(header_text: str) -> dict:
     )
     name = ""
     contact_tokens = {email, phone, linkedin, website}
-    for line in lines[:5]:
-        if not line:
+
+    # Priority pass: if the first non-contact, non-DOB line is all-caps
+    # and 2–5 words, accept it immediately as the candidate name (title-cased).
+    for _pline in lines[:5]:
+        if not _pline:
             continue
-        if any(tok in line for tok in contact_tokens if tok):
+        if any(tok in _pline for tok in contact_tokens if tok):
             continue
-        if _EMAIL_RE.search(line) or _PHONE_RE.search(line):
+        if _EMAIL_RE.search(_pline) or _PHONE_RE.search(_pline):
             continue
-        # Skip DOB lines
-        if _DOB_RE.search(line):
+        if _DOB_RE.search(_pline):
             continue
-        lower = line.lower()
-        if any(lower.startswith(prefix) for prefix in _SKIP_PREFIXES):
+        _plow = _pline.lower()
+        if any(_plow.startswith(pfx) for pfx in _SKIP_PREFIXES):
             continue
-        if len(line) > len(name):
-            name = line
+        _pwords = _pline.split()
+        if _pline.isupper() and 2 <= len(_pwords) <= 5:
+            name = _pline.title()
+        break  # only check the very first viable line
+
+    # General fallback: longest suitable line (when priority pass found nothing)
+    if not name:
+        for line in lines[:5]:
+            if not line:
+                continue
+            if any(tok in line for tok in contact_tokens if tok):
+                continue
+            if _EMAIL_RE.search(line) or _PHONE_RE.search(line):
+                continue
+            # Skip DOB lines
+            if _DOB_RE.search(line):
+                continue
+            lower = line.lower()
+            if any(lower.startswith(prefix) for prefix in _SKIP_PREFIXES):
+                continue
+            if len(line) > len(name):
+                name = line
 
     # Title: professional title on the line immediately below the candidate name,
     # before the contact block. Fallback: first non-empty, non-contact line after name.
@@ -751,8 +773,12 @@ def _parse_skills(text: str) -> dict:
         lines = [l.strip() for l in block.splitlines() if l.strip()]
         if not lines:
             continue
-        # If first line looks like a category label (short, no punctuation at end)
-        if len(lines[0]) < 50 and not lines[0].endswith((".", ",")):
+        # If first line looks like a category label (short, no punctuation at end,
+        # and contains no commas or bullet separators — those mean it IS a skill list)
+        if (len(lines[0]) < 50
+                and not lines[0].endswith((".", ","))
+                and "," not in lines[0]
+                and not re.search(r"[•|;·]", lines[0])):
             cat_name = lines[0].rstrip(":").strip()
             items_text = " ".join(lines[1:])
         else:
@@ -846,25 +872,23 @@ def _fallback_language_scan(raw_text: str) -> list[str]:
     for lang in _KNOWN_LANGUAGES:
         if lang not in text_lower:
             continue
-        # Grab 50 chars before AND after the language name to catch patterns like
-        # "Native Arabic", "Fluent in English", "Arabic – Native"
-        pattern = rf"([^\n]{{0,50}})\b{re.escape(lang)}\b([^\n]{{0,50}})"
+        # Capture up to 60 chars AFTER the language name to detect proficiency
+        # (e.g. "Arabic – Native", "English: Fluent")
+        pattern = rf"[^\n]{{0,60}}\b{re.escape(lang)}\b([^\n]{{0,60}})"
         for m in re.finditer(pattern, raw_text, re.I):
             norm = lang.lower()
             if norm in seen:
                 break
             seen.add(norm)
-            context = m.group(0)
-            # Look for proficiency word in full context (before + after)
+            # Only look at text AFTER the language name for proficiency
+            after = m.group(1).lower()
             prof = next(
-                (p for p in _PROFICIENCY_WORDS if p in context.lower()),
+                (p for p in _PROFICIENCY_WORDS if p in after),
                 None,
             )
             if prof:
-                entry = f"{lang.title()} ({prof.title()})"
-            else:
-                entry = lang.title()
-            found.append(entry)
+                found.append(f"{lang.title()} ({prof.title()})")
+            # No proficiency word after → skip; do not add a bare language name
             break  # only capture each language once
 
     return found
@@ -1224,8 +1248,13 @@ def parse_cv(
 
     Raises NonCVDocumentError if the document appears to be a job offer / JD.
     """
+    _ext = Path(filename).suffix.lower()
+    if _ext not in {".pdf", ".docx", ".doc", ".txt"}:
+        raise ValueError(
+            "[RVZ-P004] Unsupported file format. Please upload a PDF, DOCX, or TXT file."
+        )
     try:
-      return _parse_cv_inner(file, filename, api_key=api_key, check_doc_type=check_doc_type)
+        return _parse_cv_inner(file, filename, api_key=api_key, check_doc_type=check_doc_type)
     except NonCVDocumentError:
         raise
     except Exception as _e:
