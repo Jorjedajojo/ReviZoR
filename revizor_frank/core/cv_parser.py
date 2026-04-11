@@ -504,7 +504,7 @@ def _extract_contact(header_text: str) -> dict:
         if any(_plow.startswith(pfx) for pfx in _SKIP_PREFIXES):
             continue
         _pwords = _pline.split()
-        if _pline.isupper() and 2 <= len(_pwords) <= 5:
+        if _pline.isupper() and 2 <= len(_pwords) <= 4:
             name = _pline.title()
             name_idx = _pi  # record position so title search starts from next line
         break  # only check the very first viable line
