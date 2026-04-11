@@ -524,6 +524,9 @@ def _extract_contact(header_text: str) -> dict:
             lower = line.lower()
             if any(lower.startswith(prefix) for prefix in _SKIP_PREFIXES):
                 continue
+            # Skip all-uppercase lines with 5+ words — these are headings not names
+            if line.isupper() and len(line.split()) >= 5:
+                continue
             if len(line) > len(name):
                 name = line
 
