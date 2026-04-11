@@ -486,11 +486,12 @@ def _extract_contact(header_text: str) -> dict:
         "\u0627\u0644\u0639\u0646\u0648\u0627\u0646",  # العنوان
     )
     name = ""
+    name_idx = -1  # set by priority pass so title extractor finds the right line
     contact_tokens = {email, phone, linkedin, website}
 
     # Priority pass: if the first non-contact, non-DOB line is all-caps
     # and 2–5 words, accept it immediately as the candidate name (title-cased).
-    for _pline in lines[:5]:
+    for _pi, _pline in enumerate(lines[:5]):
         if not _pline:
             continue
         if any(tok in _pline for tok in contact_tokens if tok):
@@ -505,6 +506,7 @@ def _extract_contact(header_text: str) -> dict:
         _pwords = _pline.split()
         if _pline.isupper() and 2 <= len(_pwords) <= 5:
             name = _pline.title()
+            name_idx = _pi  # record position so title search starts from next line
         break  # only check the very first viable line
 
     # General fallback: longest suitable line (when priority pass found nothing)
@@ -528,7 +530,10 @@ def _extract_contact(header_text: str) -> dict:
     # Title: professional title on the line immediately below the candidate name,
     # before the contact block. Fallback: first non-empty, non-contact line after name.
     title = ""
-    name_idx = next((i for i, l in enumerate(lines[:8]) if l == name), -1)
+    # name_idx may already be set by the all-caps priority pass above (where the
+    # stored name is title-cased but lines[] still holds the original uppercase string).
+    if name_idx < 0:
+        name_idx = next((i for i, l in enumerate(lines[:8]) if l == name), -1)
     if name_idx >= 0:
         for candidate in lines[name_idx + 1: name_idx + 5]:
             c = candidate.strip()
@@ -780,10 +785,10 @@ def _parse_skills(text: str) -> dict:
                 and "," not in lines[0]
                 and not re.search(r"[•|;·]", lines[0])):
             cat_name = lines[0].rstrip(":").strip()
-            items_text = " ".join(lines[1:])
+            items_text = ", ".join(lines[1:])
         else:
             cat_name = ""
-            items_text = " ".join(lines)
+            items_text = ", ".join(lines)
         # Split items by comma, pipe, semicolon, or bullet
         items = [
             i.strip(" •-–*·")
