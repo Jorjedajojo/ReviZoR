@@ -143,8 +143,8 @@ def render_simple_login():
                 if _sessions:
                     st.session_state.pending_session_list = _sessions
                     st.session_state.show_session_picker = True
-                # Always land on select_service — picker shown there
-                st.session_state.stage = "select_service"
+                # If history exists go to queue; otherwise straight to upload
+                st.session_state.stage = "queue" if _sessions else "upload"
                 st.session_state.session_restored_banner = False
                 st.rerun()
             else:
@@ -213,7 +213,7 @@ st.markdown("""
 def _init_state():
     defaults = {
         # CV pipeline
-        "stage":            "select_service",  # select_service|upload|upload_certs|processing|review_changes|select_template|results|admin
+        "stage":            "upload",  # upload|process|review|template|edit|download|queue|admin
         "session_id":       None,
         "parsed_cv":        None,
         "offline_cv":       None,
@@ -276,6 +276,8 @@ def _init_state():
         "pending_session_list":    [],
         # Error log
         "error_log":          [],   # [{code, detail, stage, timestamp}]
+        # Sidebar collapse state
+        "sidebar_collapsed":  False,
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -533,112 +535,32 @@ def _start_over():
     for key in list(st.session_state.keys()):
         del st.session_state[key]
     st.session_state.update(auth_keys)
-    st.query_params["stage"] = "select_service"
+    st.query_params["stage"] = "upload"
     st.rerun()
 
 
 def _render_top_nav():
-    """Breadcrumb nav bar — visually pinned to top of content area."""
-    stage = st.session_state.get("stage", "select_service")
-
-    # Inject sticky CSS — works for any stage including full_preview
-    st.markdown("""
-    <style>
-    /* Pin the nav bar to top of the scrollable main area */
-    [data-testid="stMainBlockContainer"] > div:first-child {
-        position: sticky;
-        top: 0;
-        z-index: 999;
-        background-color: white;
-        padding: 0.5rem 0 0.25rem 0;
-        border-bottom: 1px solid #e8e8e8;
-        margin-bottom: 0.5rem;
-    }
-    @media (prefers-color-scheme: dark) {
-        [data-testid="stMainBlockContainer"] > div:first-child {
-            background-color: #0e1117;
-            border-bottom: 1px solid #2d2d2d;
-        }
-    }
-    </style>
-    """, unsafe_allow_html=True)
-
-    # Progress bar only makes sense for named stages in _STAGE_ORDER
-    in_order = stage in _STAGE_ORDER
-    current_idx = _STAGE_ORDER.index(stage) if in_order else 0
-    total = len(_STAGE_ORDER)
-
-    nav_left, nav_mid, nav_right = st.columns([1, 4, 1])
-
-    with nav_left:
-        # Back destination is hardcoded per stage — not inferred from _STAGE_ORDER
-        prev = _PREV_STAGE.get(stage)
-        if prev:
-            prev_label = _STAGE_LABELS.get(prev, prev.replace("_", " ").title())
-            if st.button(
-                f"← {prev_label}",
-                key=f"topnav_back_{stage}",
-                use_container_width=True,
-            ):
-                _go_to_stage(prev)
-        else:
-            st.empty()
-
-    with nav_mid:
-        if in_order:
-            steps_html = " › ".join(
-                f"<strong style='color:#1f77b4'>{_STAGE_LABELS[s]}</strong>" if s == stage
-                else f"<span style='color:#aaa'>{_STAGE_LABELS[s]}</span>"
-                for s in _STAGE_ORDER
-            )
-            st.markdown(
-                f"<div style='text-align:center;font-size:0.78rem;padding:4px 0'>{steps_html}</div>",
-                unsafe_allow_html=True,
-            )
-            st.progress(current_idx / (total - 1))
-        else:
-            # full_preview or other intermediate stage — show label only
-            label = stage.replace("_", " ").title()
-            st.markdown(
-                f"<div style='text-align:center;font-size:0.78rem;padding:4px 0;color:#1f77b4'>"
-                f"<strong>{label}</strong></div>",
-                unsafe_allow_html=True,
-            )
-
-    with nav_right:
-        if current_idx < total - 1:
-            next_stage = _STAGE_ORDER[current_idx + 1]
-            can_go = _can_advance_from(stage)
-            if can_go:
-                if st.button(
-                    f"{_STAGE_LABELS[next_stage]} →",
-                    key=f"topnav_fwd_{stage}",
-                    use_container_width=True,
-                    type="primary",
-                ):
-                    if stage == "review_changes":
-                        st.session_state.ai_cv_general = _apply_review_decisions()
-                    _go_to_stage(next_stage)
-            else:
-                st.empty()
-        else:
-            # On last stage (results) show "New CV" instead of forward
-            if st.button(
-                "＋ New CV",
-                key="topnav_newcv",
-                use_container_width=True,
-            ):
-                _start_over()
-
-    st.divider()
+    """Navigation is now handled by the sidebar — this function is a no-op."""
+    pass
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 
 def render_sidebar():
+    """Persistent collapsible navigation sidebar."""
+    _collapsed = st.session_state.get("sidebar_collapsed", False)
+
     with st.sidebar:
-        st.markdown(f"## 📄 {APP_NAME}")
-        st.caption(f"v{APP_VERSION}")
+        # ── Collapse toggle ───────────────────────────────────────────────────
+        _toggle_label = "◀" if not _collapsed else "▶"
+        if st.button(_toggle_label, key="sidebar_toggle", help="Collapse / expand sidebar"):
+            st.session_state.sidebar_collapsed = not _collapsed
+            st.rerun()
+
+        if not _collapsed:
+            st.markdown(f"## 📄 {APP_NAME}")
+            st.caption(f"v{APP_VERSION}")
+
         st.divider()
 
         # ── Auth info — simple mode ───────────────────────────────────────────
@@ -653,9 +575,11 @@ def render_sidebar():
             else:
                 rem_str, color = "—", "grey"
 
-            st.markdown(f"**{st.session_state.get('simple_auth_user', 'user')}**")
-            st.caption(f"Session expires in: :{color}[{rem_str}]")
-            if st.button("Sign Out", use_container_width=True):
+            if not _collapsed:
+                st.markdown(f"**{st.session_state.get('simple_auth_user', 'user')}**")
+                st.caption(f"Session: :{color}[{rem_str}]")
+            if st.button("⏏" if _collapsed else "Sign Out",
+                         key="sidebar_signout", use_container_width=True):
                 st.session_state.simple_auth_ok   = False
                 st.session_state.simple_auth_time = None
                 st.rerun()
@@ -665,119 +589,169 @@ def render_sidebar():
         elif AUTH_ENABLED and st.session_state.auth_user:
             user = st.session_state.auth_user
             remaining = _session_remaining_str()
-            st.markdown(
-                f"**{user.get('username', '')}**  "
-                f"`{user.get('role', 'user').upper()}`"
-            )
-            if remaining:
-                color = "red" if remaining in ("Expired",) else "orange" if "m" in remaining and "h" not in remaining else "green"
-                st.caption(f"Session expires in: :{color}[{remaining}]")
-            if st.button("Sign Out", use_container_width=True):
+            if not _collapsed:
+                st.markdown(
+                    f"**{user.get('username', '')}**  "
+                    f"`{user.get('role', 'user').upper()}`"
+                )
+                if remaining:
+                    color = ("red" if remaining == "Expired"
+                             else "orange" if "m" in remaining and "h" not in remaining
+                             else "green")
+                    st.caption(f"Session: :{color}[{remaining}]")
+            if st.button("⏏" if _collapsed else "Sign Out",
+                         key="sidebar_signout_jwt", use_container_width=True):
                 _api_logout()
                 for key in list(st.session_state.keys()):
                     del st.session_state[key]
                 st.rerun()
             st.divider()
 
-        # Connection status
+        # ── Connection status ─────────────────────────────────────────────────
         online = _check_online()
         st.session_state.online = online
-        if online:
-            st.success(f"🟢 {S['status_online']}")
-        else:
-            if ANTHROPIC_API_KEY:
+        if not _collapsed:
+            if online:
+                st.success(f"🟢 {S['status_online']}")
+            elif ANTHROPIC_API_KEY:
                 st.warning("🟡 API key found but no internet")
             else:
                 st.info(f"⚪ {S['status_offline']}")
 
-        st.divider()
-        st.markdown("### Template")
-        selected = st.session_state.selected_template
-        for key, info in TEMPLATES.items():
-            label = f"{'✓ ' if key == selected else '   '}{info['name']}"
-            if st.button(label, key=f"tmpl_{key}", use_container_width=True):
-                st.session_state.selected_template = key
-                st.rerun()
+        # ── Active candidate card ─────────────────────────────────────────────
+        if not _collapsed:
+            _filename = st.session_state.get("filename") or "No file yet"
+            _parsed   = bool(st.session_state.get("parsed_cv"))
+            _ai       = bool(st.session_state.get("ai_cv_general"))
+            _decisions = st.session_state.get("review_decisions", {})
+            _rev_done  = (bool(_decisions) and
+                          all(d["status"] in ("approved", "edited")
+                              for d in _decisions.values()))
+            _tmpl_set  = bool(st.session_state.get("selected_template"))
+            _dl_done   = st.session_state.get("stage") in ("download", "results")
+            _stages_n  = sum([_parsed, _ai, _rev_done, _tmpl_set, _dl_done])
 
+            _fn_display = _filename[:28] + "…" if len(_filename) > 28 else _filename
+            st.markdown(f"**{_fn_display}**")
+            st.progress(_stages_n / 5)
+            st.divider()
+
+        # ── CANDIDATES section ────────────────────────────────────────────────
+        if not _collapsed:
+            st.markdown(
+                "<p style='font-size:0.7rem;font-weight:700;color:#888;"
+                "text-transform:uppercase;letter-spacing:0.08em;margin-bottom:2px'>"
+                "CANDIDATES</p>",
+                unsafe_allow_html=True,
+            )
+
+        _stage = st.session_state.get("stage", "upload")
+        _session_count = len(st.session_state.get("pending_session_list", []))
+        _queue_badge = f" ({_session_count})" if _session_count else ""
+        _queue_label = "👥" if _collapsed else f"👥 Queue{_queue_badge}"
+        if st.button(_queue_label, key="nav_queue", use_container_width=True,
+                     type="primary" if _stage == "queue" else "secondary"):
+            _go_to_stage("queue")
+
+        # ── CURRENT CV section ────────────────────────────────────────────────
+        if not _collapsed:
+            st.markdown(
+                "<p style='font-size:0.7rem;font-weight:700;color:#888;"
+                "text-transform:uppercase;letter-spacing:0.08em;"
+                "margin-top:8px;margin-bottom:2px'>CURRENT CV</p>",
+                unsafe_allow_html=True,
+            )
+
+        # Recompute badges (collapsed mode shares same vars)
+        _parsed  = bool(st.session_state.get("parsed_cv"))
+        _ai      = bool(st.session_state.get("ai_cv_general"))
+        _decisions = st.session_state.get("review_decisions", {})
+        _rev_done  = (bool(_decisions) and
+                      all(d["status"] in ("approved", "edited")
+                          for d in _decisions.values()))
+
+        # Upload
+        _up_badge = " ✅" if _parsed else " ⏳"
+        _up_label = "📤" if _collapsed else f"📤 Upload{_up_badge}"
+        if st.button(_up_label, key="nav_upload", use_container_width=True,
+                     type="primary" if _stage == "upload" else "secondary"):
+            _go_to_stage("upload")
+
+        # Processing
+        if _stage == "process":
+            _proc_badge = " 🔄"
+        elif _ai:
+            _proc_badge = " ✅"
+        else:
+            _proc_badge = " ⏳"
+        _proc_label = "⚙️" if _collapsed else f"⚙️ Processing{_proc_badge}"
+        if st.button(_proc_label, key="nav_process", use_container_width=True,
+                     type="primary" if _stage == "process" else "secondary"):
+            _go_to_stage("process")
+
+        # Review
+        if not _ai:
+            _rev_badge = " 🔒"
+        elif _decisions:
+            _approved_n = sum(1 for d in _decisions.values()
+                              if d["status"] in ("approved", "edited"))
+            _rev_badge = f" {_approved_n}/{len(_decisions)} ✅"
+        else:
+            _rev_badge = " ⏳"
+        _rev_label = "🔍" if _collapsed else f"🔍 Review{_rev_badge}"
+        if st.button(_rev_label, key="nav_review", use_container_width=True,
+                     type="primary" if _stage == "review" else "secondary"):
+            _go_to_stage("review")
+
+        # Template
+        _tmpl_badge = " ✅" if st.session_state.get("selected_template") else " ⏳"
+        _tmpl_label = "🎨" if _collapsed else f"🎨 Template{_tmpl_badge}"
+        if st.button(_tmpl_label, key="nav_template", use_container_width=True,
+                     type="primary" if _stage == "template" else "secondary"):
+            _go_to_stage("template")
+
+        # Edit
+        _edit_badge = " ✅" if _ai else " ⏳"
+        _edit_label = "✏️" if _collapsed else f"✏️ Edit{_edit_badge}"
+        if st.button(_edit_label, key="nav_edit", use_container_width=True,
+                     type="primary" if _stage == "edit" else "secondary"):
+            _go_to_stage("edit")
+
+        # Download & Send
+        _dl_badge = " ✅" if _rev_done else " 🔒"
+        _dl_label = "⬇️" if _collapsed else f"⬇️ Download & Send{_dl_badge}"
+        if st.button(_dl_label, key="nav_download", use_container_width=True,
+                     type="primary" if _stage in ("download", "results") else "secondary"):
+            _go_to_stage("download")
+
+        # ── Bottom actions ────────────────────────────────────────────────────
         st.divider()
-        if st.button("🔄 New CV", use_container_width=True):
+        if not _collapsed:
+            if st.button("📂 All CVs", use_container_width=True, key="sidebar_allcvs"):
+                _go_to_stage("queue")
+        if st.button("➕" if _collapsed else "➕ New CV",
+                     key="sidebar_new_cv", use_container_width=True, type="primary"):
             _start_over()
 
-        # Admin dashboard button (only for admin role)
+        # ── Admin ─────────────────────────────────────────────────────────────
         if st.session_state.get("user_role") == "admin":
             st.divider()
-            if st.button("🛠 Admin Dashboard", use_container_width=True):
+            _adm_label = "🛠" if _collapsed else "🛠 Admin Dashboard"
+            if st.button(_adm_label, key="sidebar_admin", use_container_width=True):
                 _go_to_stage("admin")
 
-        st.divider()
-        _last_stage = st.session_state.get("stage", "")
-        if _last_stage:
-            st.sidebar.caption(f"Last saved: {_last_stage.replace('_', ' ').title()}")
-        st.caption("ReviZoR FranK — Part of the ReviZoR HR Platform")
+        if not _collapsed:
+            st.divider()
+            st.caption("ReviZoR FranK — ReviZoR HR Platform")
 
 
-# ── Service selection stage ───────────────────────────────────────────────────
+# ── Upload stage (service tier + file upload + cert expander) ────────────────
 
-def render_select_service():
-    _render_top_nav()
+def render_upload():
     st.markdown(f"# 📄 {APP_NAME}")
+    st.markdown(f"*{S['app_tagline']}*")
 
-    # ── Session picker (shown after login when history exists) ────────────────
-    if st.session_state.get("show_session_picker") and st.session_state.get("pending_session_list"):
-        sessions = st.session_state.pending_session_list
-
-        st.markdown("### 📂 Your Previous CV Sessions")
-        st.caption("Select a session to continue where you left off, or start a new CV below.")
-
-        for s in sessions:
-            label   = s.get("display_name") or s.get("filename") or "Untitled CV"
-            stage   = s.get("stage", "unknown").replace("_", " ").title()
-            updated = s.get("updated_at", "")[:16].replace("T", " ")
-            status  = "✅ Complete" if s.get("is_complete") else f"⏸ Stopped at: {stage}"
-            col_a, col_b = st.columns([4, 1])
-            with col_a:
-                st.markdown(f"**{label}** &nbsp;·&nbsp; {status} &nbsp;·&nbsp; Last saved: {updated}")
-            with col_b:
-                if st.button("Resume", key=f"resume_{s['session_id']}"):
-                    try:
-                        from revizor_frank.storage import supabase_db as _sdb
-                        _saved = _sdb.load_session(
-                            st.session_state.simple_auth_user,
-                            session_id=s["session_id"],
-                        )
-                        if _saved:
-                            _restorable = [
-                                "parsed_cv", "ai_cv_general", "ai_cv_jd", "offline_cv",
-                                "linkedin_data", "job_description", "service_tier",
-                                "selected_template", "template_color", "filename",
-                                "ats_report", "session_id", "review_decisions",
-                                "questions_list", "missing_fields", "edited_cv",
-                            ]
-                            for _key in _restorable:
-                                if _saved.get(_key):
-                                    st.session_state[_key] = _saved[_key]
-                            _sd = _saved.get("session_data") or {}
-                            for _key in ("missing_fields", "questions_list", "selected_template"):
-                                if _sd.get(_key):
-                                    st.session_state[_key] = _sd[_key]
-                            if _saved.get("parsed_cv"):
-                                st.session_state.session_already_parsed = True
-                            st.session_state.session_restored_banner = True
-                            st.session_state.show_session_picker = False
-                            st.session_state.stage = "select_service"
-                            st.rerun()
-                    except Exception:
-                        st.error("Could not load that session. Please try again.")
-
-        st.divider()
-        if st.button("🆕 Start a new CV instead", use_container_width=False):
-            st.session_state.show_session_picker = False
-            st.session_state.pending_session_list = []
-            st.rerun()
-
-        st.stop()  # Don't render service cards until user makes a choice
-
-    # ── Session-restored banner (shown once after login; dismissed by button) ─
+    # ── Session-restored banner ───────────────────────────────────────────────
     if st.session_state.get("session_restored_banner"):
         _fn = st.session_state.get("filename", "your previous CV")
         st.info(
@@ -788,68 +762,34 @@ def render_select_service():
             st.session_state.session_restored_banner = False
             st.rerun()
 
-    st.markdown("*Choose your service before uploading your CV.*")
     st.divider()
 
-    col_l, col_m, col_r = st.columns([1, 3, 1])
-    with col_m:
-        st.markdown("## Select Your Service")
-        st.markdown("<br>", unsafe_allow_html=True)
+    # ── Service tier toggle ───────────────────────────────────────────────────
+    st.markdown("### Select Service")
+    _tier = st.session_state.get("service_tier", "")
+    _t1, _t2 = st.columns(2)
+    with _t1:
+        if st.button(
+            "📄 CV Only  ($7.50)",
+            use_container_width=True,
+            type="primary" if _tier == "cv_only" else "secondary",
+            key="tier_toggle_cv",
+        ):
+            st.session_state.service_tier = "cv_only"
+            st.rerun()
+    with _t2:
+        if st.button(
+            "📄 + 🔗 CV + LinkedIn  ($10.00)",
+            use_container_width=True,
+            type="primary" if _tier == "cv_linkedin" else "secondary",
+            key="tier_toggle_linkedin",
+        ):
+            st.session_state.service_tier = "cv_linkedin"
+            st.rerun()
 
-        tier_col1, tier_col2 = st.columns(2, gap="large")
-
-        with tier_col1:
-            st.markdown("""
-<div style="border:2px solid #0d6efd;border-radius:12px;padding:1.5rem;text-align:center">
-<h3 style="margin:0">📄 CV Revision</h3>
-<p style="font-size:2rem;font-weight:800;color:#0d6efd;margin:0.5rem 0">$7.50</p>
-<ul style="text-align:left;margin-top:1rem">
-<li>ATS score &amp; issue report</li>
-<li>AI-optimized CV rewrite</li>
-<li>JD-tailored version (if JD provided)</li>
-<li>Plain text (.txt) output</li>
-</ul>
-</div>""", unsafe_allow_html=True)
-            if st.button("Select CV Revision", key="tier_cv_only",
-                         use_container_width=True, type="primary"):
-                st.session_state.service_tier = "cv_only"
-                _go_to_stage("upload")
-
-        with tier_col2:
-            st.markdown("""
-<div style="border:2px solid #198754;border-radius:12px;padding:1.5rem;text-align:center">
-<h3 style="margin:0">📄 + 🔗 CV + LinkedIn</h3>
-<p style="font-size:2rem;font-weight:800;color:#198754;margin:0.5rem 0">$10.00</p>
-<ul style="text-align:left;margin-top:1rem">
-<li>Everything in CV Revision</li>
-<li>Full LinkedIn profile generator</li>
-<li>All 6 download formats</li>
-<li>Inline CV editor</li>
-</ul>
-</div>""", unsafe_allow_html=True)
-            if st.button("Select CV + LinkedIn", key="tier_cv_linkedin",
-                         use_container_width=True, type="primary"):
-                st.session_state.service_tier = "cv_linkedin"
-                _go_to_stage("upload")
-
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.divider()
-        st.markdown("**Have a coupon code?**")
-        coupon = st.text_input("Coupon Code (optional)", placeholder="Enter code",
-                               value=st.session_state.get("coupon_code", ""),
-                               key="coupon_input")
-        if coupon != st.session_state.get("coupon_code", ""):
-            st.session_state.coupon_code = coupon.strip()
-
-
-# ── Upload stage ──────────────────────────────────────────────────────────────
-
-def render_upload():
-    _render_top_nav()
-    st.markdown(f"# 📄 {APP_NAME}")
-    st.markdown(f"*{S['app_tagline']}*")
     st.divider()
 
+    # ── CV file upload ────────────────────────────────────────────────────────
     col1, col2 = st.columns([3, 2], gap="large")
 
     with col1:
@@ -858,6 +798,7 @@ def render_upload():
             S["upload_instruction"],
             type=["pdf", "docx", "txt"],
             label_visibility="visible",
+            key="cv_file_uploader",
         )
 
         st.markdown(f"### {S['upload_jd_label']}")
@@ -866,16 +807,18 @@ def render_upload():
             placeholder=S["upload_jd_placeholder"],
             height=200,
             label_visibility="visible",
+            value=st.session_state.get("job_description", ""),
+            key="upload_jd_area",
         )
 
         ready = uploaded is not None
-        btn = st.button(
-            f"🚀 {S['upload_btn']}",
+        upload_btn = st.button(
+            f"📥 {S['upload_btn']}",
             disabled=not ready,
-            type="primary",
+            type="secondary",
             use_container_width=True,
+            key="upload_save_btn",
         )
-
         if not ready:
             st.caption(S["err_no_file"])
 
@@ -907,11 +850,10 @@ improvements work without internet.
 language, optimizes for your target role.
         """)
 
-    if btn and uploaded:
+    if upload_btn and uploaded:
         st.session_state.filename = uploaded.name
         st.session_state.uploaded_cv_bytes = uploaded.getvalue()
         st.session_state.job_description = jd.strip()
-        # Derive a session_id from username + upload timestamp for dedup / skip-reparse
         _upload_username = (
             st.session_state.get("simple_auth_user") or
             (st.session_state.get("auth_user") or {}).get("username", "anon")
@@ -934,8 +876,6 @@ language, optimizes for your target role.
         st.session_state.questions_token     = ""
         st.session_state.missing_fields      = []
         st.session_state.recommended_missing = []
-
-        # Pre-flight: quick parse to detect required missing fields
         try:
             import io as _io
             from revizor_frank.core import cv_parser as _cvp
@@ -943,21 +883,11 @@ language, optimizes for your target role.
                 _io.BytesIO(uploaded.getvalue()), uploaded.name,
                 api_key="", check_doc_type=False,
             )
-            # Use REQUIRED_FIELDS check from cv_parser
             basic_missing = _cvp.check_required_fields(_quick)
             st.session_state.missing_fields = basic_missing
         except Exception:
             pass
-
-        _go_to_stage("upload_certs")
-
-
-# ── Certificate upload stage ──────────────────────────────────────────────────
-
-def render_upload_certs():
-    _render_top_nav()
-    st.markdown(f"# 📄 {APP_NAME}")
-    st.markdown(f"**CV uploaded:** `{st.session_state.filename}`")
+        st.rerun()  # Stay on upload page — show cert expander
 
     # ── Required-fields warning ───────────────────────────────────────────────
     _missing = st.session_state.get("missing_fields") or []
@@ -967,189 +897,142 @@ def render_upload_certs():
             + "\n".join(f"- {f}" for f in _missing)
         )
 
-    st.divider()
+    # ── Certificate & extras expander (shown once a CV is uploaded) ──────────
+    if st.session_state.get("uploaded_cv_bytes"):
+        st.info(f"✅ **CV loaded:** `{st.session_state.get('filename', '')}`")
 
-    col_left, col_right = st.columns([2, 1], gap="large")
+        with st.expander("📜 Add certificates or extra pages (optional)", expanded=False):
+            st.caption(
+                "Upload any certificates or additional CV files. "
+                "Claude will detect what each file is — certificates are added to your CV, "
+                "extra CV pages are merged in automatically."
+            )
+            uploaded_files = st.file_uploader(
+                "Files (PDF, JPG, PNG, DOCX, TXT)",
+                type=["pdf", "jpg", "jpeg", "png", "docx", "txt"],
+                accept_multiple_files=True,
+                key="cert_uploader",
+                label_visibility="collapsed",
+            )
+            if uploaded_files:
+                if st.button("🔍 Classify & Extract", type="secondary",
+                             use_container_width=True):
+                    if not _check_online():
+                        st.warning("File classification requires internet. "
+                                   "You can still proceed without adding files.")
+                    else:
+                        _classified = []
+                        _total_in, _total_out = 0, 0
+                        with st.spinner(f"Classifying {len(uploaded_files)} file(s)…"):
+                            try:
+                                from revizor_frank.core import cert_extractor
+                                for uf in uploaded_files:
+                                    file_bytes = uf.getvalue()
+                                    doc_type, dt_in, dt_out = cert_extractor.detect_document_type(
+                                        file_bytes, uf.name
+                                    )
+                                    _total_in += dt_in; _total_out += dt_out
+                                    if doc_type == "CV":
+                                        cv_data, cv_in, cv_out = cert_extractor.extract_cv_data_from_file(
+                                            file_bytes, uf.name
+                                        )
+                                        _total_in += cv_in; _total_out += cv_out
+                                        _classified.append({"filename": uf.name, "type": "CV", "data": cv_data})
+                                    else:
+                                        cert, c_in, c_out = cert_extractor.extract_certificate(
+                                            file_bytes, uf.name
+                                        )
+                                        cert["_filename"] = uf.name
+                                        _total_in += c_in; _total_out += c_out
+                                        _classified.append({"filename": uf.name, "type": "CERTIFICATE", "data": cert})
+                            except Exception as e:
+                                st.error(f"Classification failed: {e}")
+                        if _classified:
+                            st.session_state.classified_files = _classified
+                            st.session_state.cert_input_tokens  = (
+                                st.session_state.get("cert_input_tokens", 0) + _total_in
+                            )
+                            st.session_state.cert_output_tokens = (
+                                st.session_state.get("cert_output_tokens", 0) + _total_out
+                            )
+                            st.rerun()
 
-    with col_left:
-        st.markdown("### 📜 Add Certificates or Extra CV Pages (Optional)")
-        st.caption(
-            "Upload any certificates or additional CV files. "
-            "Claude will detect what each file is — certificates are added to your CV, "
-            "extra CV pages are merged in automatically."
-        )
-
-        uploaded_files = st.file_uploader(
-            "Files (PDF, JPG, PNG, DOCX, TXT)",
-            type=["pdf", "jpg", "jpeg", "png", "docx", "txt"],
-            accept_multiple_files=True,
-            key="cert_uploader",
-            label_visibility="collapsed",
-        )
-
-        if uploaded_files:
-            if st.button("🔍 Classify & Extract", type="secondary",
-                         use_container_width=True):
-                if not _check_online():
-                    st.warning("File classification requires internet. "
-                               "You can still proceed without adding files.")
+            classified = st.session_state.get("classified_files", [])
+            if classified:
+                st.divider()
+                st.markdown("#### ✏️ Review Detected Files")
+                cv_items   = [c for c in classified if c["type"] == "CV"]
+                cert_items = [c for c in classified if c["type"] == "CERTIFICATE"]
+                for item in cv_items:
+                    st.success(f"📄 CV/Resume detected: **{item['filename']}**")
+                    _cv = item["data"]
+                    _name = _cv.get("name") or ""
+                    _exp_count  = len(_cv.get("experience", []))
+                    _edu_count  = len(_cv.get("education", []))
+                    _skill_cats = len(_cv.get("skills", {}).get("categories", []))
+                    st.caption(
+                        f"{_name + ' · ' if _name else ''}"
+                        f"{_exp_count} experience entr{'y' if _exp_count == 1 else 'ies'}, "
+                        f"{_edu_count} education entr{'y' if _edu_count == 1 else 'ies'}, "
+                        f"{_skill_cats} skill categor{'y' if _skill_cats == 1 else 'ies'} — "
+                        "will be merged into your CV automatically."
+                    )
+                if cert_items:
+                    st.markdown("**Edit certificate details if needed:**")
+                    with st.form("cert_confirm_form"):
+                        edited_certs = []
+                        for i, item in enumerate(cert_items):
+                            cert = item["data"]
+                            label = cert.get("name") or item["filename"]
+                            st.markdown(f"**📜 {label}** — `{item['filename']}`")
+                            col_a, col_b = st.columns(2)
+                            with col_a:
+                                c_name   = st.text_input("Certificate Name",    value=cert.get("name", ""),          key=f"cname_{i}")
+                                c_issuer = st.text_input("Issuing Organisation", value=cert.get("issuer", ""),        key=f"ciss_{i}")
+                            with col_b:
+                                c_date   = st.text_input("Issue Date",           value=cert.get("date", ""),          key=f"cdate_{i}")
+                                c_id     = st.text_input("Credential ID (opt.)", value=cert.get("credential_id", ""), key=f"ccid_{i}")
+                            edited_certs.append({"name": c_name, "issuer": c_issuer,
+                                                 "date": c_date, "credential_id": c_id})
+                            if i < len(cert_items) - 1:
+                                st.divider()
+                        col_ok, col_skip_btn = st.columns(2)
+                        with col_ok:
+                            confirmed = st.form_submit_button(
+                                "✅ Confirm Certificates", type="primary", use_container_width=True
+                            )
+                        with col_skip_btn:
+                            skipped_form = st.form_submit_button("Skip", use_container_width=True)
+                    if confirmed:
+                        st.session_state.certificates = [
+                            {"name": c["name"], "issuer": c["issuer"],
+                             "date": c["date"],  "credential_id": c.get("credential_id", "")}
+                            for c in edited_certs if c.get("name")
+                        ]
+                        st.session_state.additional_cv_data = [item["data"] for item in cv_items]
+                        st.session_state.classified_files = []
+                        st.rerun()
+                    elif skipped_form:
+                        st.session_state.additional_cv_data = [item["data"] for item in cv_items]
+                        st.session_state.classified_files = []
+                        st.rerun()
                 else:
-                    classified = []
-                    total_in, total_out = 0, 0
-                    with st.spinner(f"Classifying {len(uploaded_files)} file(s)…"):
-                        try:
-                            from revizor_frank.core import cert_extractor
-                            for uf in uploaded_files:
-                                file_bytes = uf.getvalue()
-                                doc_type, dt_in, dt_out = cert_extractor.detect_document_type(
-                                    file_bytes, uf.name
-                                )
-                                total_in += dt_in
-                                total_out += dt_out
-                                if doc_type == "CV":
-                                    cv_data, cv_in, cv_out = cert_extractor.extract_cv_data_from_file(
-                                        file_bytes, uf.name
-                                    )
-                                    total_in += cv_in
-                                    total_out += cv_out
-                                    classified.append({
-                                        "filename": uf.name,
-                                        "type": "CV",
-                                        "data": cv_data,
-                                    })
-                                else:
-                                    cert, c_in, c_out = cert_extractor.extract_certificate(
-                                        file_bytes, uf.name
-                                    )
-                                    cert["_filename"] = uf.name
-                                    total_in += c_in
-                                    total_out += c_out
-                                    classified.append({
-                                        "filename": uf.name,
-                                        "type": "CERTIFICATE",
-                                        "data": cert,
-                                    })
-                        except Exception as e:
-                            st.error(f"Classification failed: {e}")
-                    if classified:
-                        st.session_state.classified_files = classified
-                        st.session_state.cert_input_tokens  = (
-                            st.session_state.get("cert_input_tokens", 0) + total_in
-                        )
-                        st.session_state.cert_output_tokens = (
-                            st.session_state.get("cert_output_tokens", 0) + total_out
-                        )
+                    if st.button("✅ Confirm Extra Pages", type="secondary", use_container_width=True):
+                        st.session_state.additional_cv_data = [item["data"] for item in cv_items]
+                        st.session_state.classified_files = []
                         st.rerun()
 
-        # ── Review classified results ──────────────────────────────────────────
-        classified = st.session_state.get("classified_files", [])
-        if classified:
-            st.divider()
-            st.markdown("#### ✏️ Review Detected Files")
-
-            # Show CV summaries (read-only)
-            cv_items   = [c for c in classified if c["type"] == "CV"]
-            cert_items = [c for c in classified if c["type"] == "CERTIFICATE"]
-
-            for item in cv_items:
-                st.success(f"📄 CV/Resume detected: **{item['filename']}**")
-                cv = item["data"]
-                name = cv.get("name") or ""
-                exp_count  = len(cv.get("experience", []))
-                edu_count  = len(cv.get("education", []))
-                skill_cats = len(cv.get("skills", {}).get("categories", []))
-                st.caption(
-                    f"{name + ' · ' if name else ''}"
-                    f"{exp_count} experience entr{'y' if exp_count == 1 else 'ies'}, "
-                    f"{edu_count} education entr{'y' if edu_count == 1 else 'ies'}, "
-                    f"{skill_cats} skill categor{'y' if skill_cats == 1 else 'ies'} — "
-                    "will be merged into your CV automatically."
-                )
-
-            # Editable form for certificates
-            if cert_items:
-                st.markdown("**Edit certificate details if needed:**")
-                with st.form("cert_confirm_form"):
-                    edited_certs = []
-                    for i, item in enumerate(cert_items):
-                        cert = item["data"]
-                        label = cert.get("name") or item["filename"]
-                        st.markdown(f"**📜 {label}** — `{item['filename']}`")
-                        col_a, col_b = st.columns(2)
-                        with col_a:
-                            c_name   = st.text_input("Certificate Name",    value=cert.get("name", ""),          key=f"cname_{i}")
-                            c_issuer = st.text_input("Issuing Organisation", value=cert.get("issuer", ""),        key=f"ciss_{i}")
-                        with col_b:
-                            c_date   = st.text_input("Issue Date",           value=cert.get("date", ""),          key=f"cdate_{i}")
-                            c_id     = st.text_input("Credential ID (opt.)", value=cert.get("credential_id", ""), key=f"ccid_{i}")
-                        edited_certs.append({"name": c_name, "issuer": c_issuer,
-                                             "date": c_date, "credential_id": c_id})
-                        if i < len(cert_items) - 1:
-                            st.divider()
-
-                    col_ok, col_skip_btn = st.columns(2)
-                    with col_ok:
-                        confirmed = st.form_submit_button(
-                            "✅ Confirm & Optimize CV", type="primary", use_container_width=True
-                        )
-                    with col_skip_btn:
-                        skipped_form = st.form_submit_button(
-                            "Skip & Optimize CV", use_container_width=True
-                        )
-
-                if confirmed:
-                    st.session_state.certificates = [
-                        {"name": c["name"], "issuer": c["issuer"],
-                         "date": c["date"],  "credential_id": c.get("credential_id", "")}
-                        for c in edited_certs if c.get("name")
-                    ]
-                    st.session_state.additional_cv_data = [
-                        item["data"] for item in cv_items
-                    ]
-                    st.session_state.classified_files = []
-                    _go_to_stage("processing")
-                elif skipped_form:
-                    st.session_state.additional_cv_data = [
-                        item["data"] for item in cv_items
-                    ]
-                    st.session_state.classified_files = []
-                    _go_to_stage("processing")
-            else:
-                # Only CV files detected — no cert form needed
-                st.markdown("<br>", unsafe_allow_html=True)
-                if st.button("✅ Confirm & Optimize CV", type="primary",
-                             use_container_width=True):
-                    st.session_state.additional_cv_data = [
-                        item["data"] for item in cv_items
-                    ]
-                    st.session_state.classified_files = []
-                    _go_to_stage("processing")
-
-        # ── Skip entirely (no files classified yet) ────────────────────────────
-        if not classified:
-            st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("⏭️ No files to add — Proceed to Optimization",
-                         type="primary", use_container_width=True):
-                _go_to_stage("processing")
-
-    with col_right:
-        st.markdown("### What can I upload here?")
-        st.markdown("""
-**Certificates & Qualifications**
-Add any credentials you've earned — Claude extracts the name, issuer, and date automatically.
-
-**Additional CV Pages**
-Upload a second CV (different format, older version, LinkedIn export) — Claude merges the unique content into your main CV.
-
-**Why bother?**
-- **ATS scoring** — certifications are a key scoring factor
-- **Complete picture** — nothing gets left behind
-- **All outputs** — merged content appears in PDF, DOCX, and LinkedIn exports
-
-**Supported formats:** PDF · JPG · PNG · DOCX · TXT
-
-File detection is a lightweight call — it does not inflate your main optimisation cost.
-        """)
+        # ── Proceed to optimization ───────────────────────────────────────────
+        st.divider()
+        if not st.session_state.get("service_tier"):
+            st.warning("Please select a service tier above before optimizing.")
+        else:
+            if st.button("🚀 Optimize CV →", type="primary", use_container_width=True,
+                         key="proceed_to_optimize"):
+                st.session_state.job_description = st.session_state.get(
+                    "upload_jd_area", st.session_state.get("job_description", "")
+                ).strip()
+                _go_to_stage("process")
 
 
 # ── Processing pipeline ───────────────────────────────────────────────────────
@@ -1369,9 +1252,9 @@ def _run_pipeline():
         # Route to review stage when AI ran, otherwise go to template selection
         if st.session_state.get("ai_cv_general"):
             _init_review_state()
-            _go_to_stage("review_changes")
+            _go_to_stage("review")
         else:
-            _go_to_stage("select_template")
+            _go_to_stage("template")
 
     except Exception as e:
         progress.empty()
@@ -2036,7 +1919,7 @@ def render_review_changes():
         if st.button("Finalise CV →", type="primary", use_container_width=True,
                      disabled=not all_done, key="finalise_top"):
             st.session_state.ai_cv_general = _apply_review_decisions()
-            _go_to_stage("full_preview")
+            _go_to_stage("template")
         st.caption(f"{approved}/{total} sections reviewed")
 
     st.divider()
@@ -2138,7 +2021,7 @@ def render_review_changes():
         if st.button("Finalise CV →", type="primary", use_container_width=True,
                      disabled=not all_done, key="finalise_bottom"):
             st.session_state.ai_cv_general = _apply_review_decisions()
-            _go_to_stage("full_preview")
+            _go_to_stage("template")
         st.caption(f"{approved}/{total} sections reviewed")
 
     _render_questions_panel()
@@ -2612,7 +2495,7 @@ def render_select_template():
 
     if st.button("Use This Template — Download My CV →",
                  type="primary", use_container_width=True):
-        _go_to_stage("results")
+        _go_to_stage("download")
 
 
 # ── Results stage ─────────────────────────────────────────────────────────────
@@ -3321,7 +3204,7 @@ def render_admin_dashboard():
 
     st.divider()
     if st.button("← Back to App", use_container_width=False):
-        _go_to_stage("select_service")
+        _go_to_stage("upload")
 
 
 def _render_ats_issues(ats: dict):
@@ -3449,6 +3332,30 @@ def _render_downloads():
             mime="text/plain",
             use_container_width=False,
         )
+
+    # ── Send to candidate ─────────────────────────────────────────────────────
+    st.divider()
+    st.subheader("Send to candidate")
+    email_to = st.text_input("Candidate email", placeholder="candidate@email.com", key="send_email_to")
+    col1, col2 = st.columns(2)
+    with col1:
+        send_pdf = st.button("Send PDF", use_container_width=True, key="send_pdf_btn")
+    with col2:
+        send_all = st.button("Send all formats", use_container_width=True, key="send_all_btn")
+    if send_pdf and email_to:
+        ok, err = _send_cv_email(to=email_to, formats=["pdf"])
+        if ok:
+            st.success(f"PDF sent to {email_to}")
+        else:
+            st.error(f"Failed to send: {err}")
+    if send_all and email_to:
+        ok, err = _send_cv_email(to=email_to, formats=["pdf", "docx", "txt"])
+        if ok:
+            st.success(f"All formats sent to {email_to}")
+        else:
+            st.error(f"Failed to send: {err}")
+    if (send_pdf or send_all) and not email_to:
+        st.warning("Please enter a candidate email address.")
 
 
 def _format_download_btn(col, cv: dict, fmt: str, template: str, filename: str,
@@ -3596,6 +3503,224 @@ def render_owner_form(token: str):
                 st.error("Could not save answers — please try again.")
 
 
+# ── Send CV by email ─────────────────────────────────────────────────────────
+
+def _send_cv_email(to: str, formats: list) -> tuple:
+    """Send revised CV to candidate via SMTP. Returns (success: bool, error: str)."""
+    import smtplib
+    import ssl
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.base import MIMEBase
+    from email.mime.text import MIMEText
+    from email import encoders as _encoders
+
+    smtp_host  = os.getenv("SMTP_HOST", "smtp.gmail.com")
+    smtp_port  = int(os.getenv("SMTP_PORT", "465"))
+    smtp_user  = os.getenv("SMTP_USER", "")
+    smtp_pass  = os.getenv("SMTP_PASS", "")
+    from_name  = os.getenv("SMTP_FROM_NAME", "ReviZoR FranK")
+
+    if not smtp_user or not smtp_pass:
+        st.error(
+            "SMTP not configured. Add SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS "
+            "to Streamlit secrets."
+        )
+        return False, "SMTP credentials not set."
+
+    cv = (
+        st.session_state.get("edited_cv") or
+        st.session_state.get("ai_cv_general") or
+        st.session_state.get("offline_cv")
+    )
+    if not cv:
+        return False, "No CV available to send."
+
+    template       = st.session_state.get("selected_template", DEFAULT_TEMPLATE)
+    template_color = st.session_state.get("template_color", "")
+    fname_base     = (cv.get("name", "cv") or "cv").replace(" ", "_")
+    cand_name      = cv.get("name", "Candidate")
+
+    msg = MIMEMultipart()
+    msg["From"]    = f"{from_name} <{smtp_user}>"
+    msg["To"]      = to
+    msg["Subject"] = f"Your Optimized CV — {cand_name}"
+    msg.attach(MIMEText(
+        f"Hi,\n\nPlease find your optimized CV attached.\n\nBest regards,\n{from_name}",
+        "plain",
+    ))
+
+    for fmt in formats:
+        try:
+            data = _build_export_bytes(cv, fmt, template, template_color)
+            part = MIMEBase("application", "octet-stream")
+            part.set_payload(data)
+            _encoders.encode_base64(part)
+            part.add_header(
+                "Content-Disposition", "attachment",
+                filename=f"{fname_base}_General.{fmt}",
+            )
+            msg.attach(part)
+        except Exception as e:
+            return False, f"Could not build {fmt} export: {e}"
+
+    try:
+        context = ssl.create_default_context()
+        with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context) as server:
+            server.login(smtp_user, smtp_pass)
+            server.sendmail(smtp_user, to, msg.as_string())
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)
+
+
+# ── Queue stage ───────────────────────────────────────────────────────────────
+
+def render_queue():
+    """Candidate queue — list all sessions, filter, resume or start new."""
+    st.markdown("# 👥 Candidate Queue")
+    st.caption("All CV sessions saved for this account.")
+    st.divider()
+
+    username = (
+        st.session_state.get("simple_auth_user") or
+        (st.session_state.get("auth_user") or {}).get("username", "")
+    )
+    sessions: list = []
+    if username:
+        try:
+            from revizor_frank.storage import supabase_db as _sdb
+            sessions = _sdb.list_sessions(username) or []
+            # Cache locally so sidebar badge is up-to-date
+            st.session_state.pending_session_list = sessions
+        except Exception:
+            st.warning("Could not load sessions from database.")
+
+    right_col, _ = st.columns([1, 3])
+    with right_col:
+        if st.button("➕ New CV", type="primary", key="queue_new_cv",
+                     use_container_width=True):
+            _start_over()
+
+    if not sessions:
+        st.info("No previous sessions found for this account.")
+        return
+
+    # ── Filter pills ──────────────────────────────────────────────────────────
+    filter_opt = st.radio(
+        "Show",
+        ["All", "In Progress", "Completed"],
+        horizontal=True,
+        key="queue_filter",
+    )
+
+    def _queue_status(s: dict) -> str:
+        if s.get("is_complete"):
+            return "Completed"
+        if s.get("parsed_cv") is not None or s.get("stage") not in (None, "upload"):
+            return "In Progress"
+        return "Incomplete"
+
+    if filter_opt == "In Progress":
+        sessions = [s for s in sessions if _queue_status(s) == "In Progress"]
+    elif filter_opt == "Completed":
+        sessions = [s for s in sessions if _queue_status(s) == "Completed"]
+
+    if not sessions:
+        st.info(f"No '{filter_opt}' sessions found.")
+        return
+
+    st.divider()
+
+    for s in sessions:
+        _label   = s.get("display_name") or s.get("filename") or "Untitled CV"
+        _stage   = (s.get("stage") or "unknown").replace("_", " ").title()
+        _updated = (s.get("updated_at") or "")[:16].replace("T", " ")
+        _status  = "✅ Complete" if s.get("is_complete") else f"⏸ {_stage}"
+
+        # Initials avatar
+        _words = _label.split()
+        _initials = "".join(w[0].upper() for w in _words[:2]) if _words else "?"
+
+        col_av, col_info, col_btn = st.columns([1, 6, 2])
+        with col_av:
+            st.markdown(
+                f'<div style="width:40px;height:40px;border-radius:50%;'
+                f'background:#0d6efd;color:white;display:flex;'
+                f'align-items:center;justify-content:center;'
+                f'font-weight:700;font-size:1rem">{_initials}</div>',
+                unsafe_allow_html=True,
+            )
+        with col_info:
+            st.markdown(f"**{_label}**")
+            st.caption(f"{_status}  ·  Last saved: {_updated}")
+        with col_btn:
+            if st.button("Resume", key=f"q_resume_{s['session_id']}",
+                         use_container_width=True):
+                try:
+                    from revizor_frank.storage import supabase_db as _sdb2
+                    _saved = _sdb2.load_session(username, session_id=s["session_id"])
+                    if _saved:
+                        _restorable = [
+                            "parsed_cv", "ai_cv_general", "ai_cv_jd", "offline_cv",
+                            "linkedin_data", "job_description", "service_tier",
+                            "selected_template", "template_color", "filename",
+                            "ats_report", "session_id", "review_decisions",
+                            "questions_list", "missing_fields", "edited_cv",
+                        ]
+                        for _key in _restorable:
+                            if _saved.get(_key):
+                                st.session_state[_key] = _saved[_key]
+                        _sd = _saved.get("session_data") or {}
+                        for _key in ("missing_fields", "questions_list", "selected_template"):
+                            if _sd.get(_key):
+                                st.session_state[_key] = _sd[_key]
+                        if _saved.get("parsed_cv"):
+                            st.session_state.session_already_parsed = True
+                        st.session_state.session_restored_banner = True
+                        st.session_state.show_session_picker = False
+                        # Route to the saved stage (with migration)
+                        _raw = _saved.get("stage", "upload")
+                        _MIGRATE = {
+                            "select_service": "upload", "upload_certs": "upload",
+                            "processing": "process", "review_changes": "review",
+                            "full_preview": "template", "select_template": "template",
+                            "results": "download",
+                        }
+                        st.session_state.stage = _MIGRATE.get(_raw, _raw)
+                        st.rerun()
+                except Exception:
+                    st.error("Could not load that session. Please try again.")
+        st.divider()
+
+
+# ── Edit stage ────────────────────────────────────────────────────────────────
+
+def render_edit():
+    """Standalone Edit CV section between Template and Download."""
+    st.markdown("# ✏️ Edit CV")
+    st.divider()
+
+    if not st.session_state.get("ai_cv_general") and not st.session_state.get("offline_cv"):
+        st.warning(
+            "AI optimisation hasn't run yet — no CV to edit. "
+            "Go to **Processing** to run it first."
+        )
+
+    tier = st.session_state.get("service_tier", "cv_linkedin")
+    include_linkedin = (tier != "cv_only")
+    _render_edit_cv_tab(include_linkedin)
+
+    st.divider()
+    col_back, _, col_fwd = st.columns([2, 3, 2])
+    with col_back:
+        if st.button("← Template", use_container_width=True, key="edit_back"):
+            _go_to_stage("template")
+    with col_fwd:
+        if st.button("Download →", type="primary", use_container_width=True,
+                     key="edit_to_download"):
+            _go_to_stage("download")
+
+
 # ── Main router ───────────────────────────────────────────────────────────────
 
 def main():
@@ -3630,33 +3755,45 @@ def main():
     # session state caused browser back to re-route into login. Navigation is
     # now handled exclusively by _go_to_stage() and the top nav bar buttons.
 
+    # ── Stage migration — backward compat with saved sessions ────────────────
+    _STAGE_MIGRATION = {
+        "select_service": "upload",
+        "upload_certs":   "upload",
+        "processing":     "process",
+        "review_changes": "review",
+        "full_preview":   "template",
+        "select_template": "template",
+        "results":        "download",
+    }
+    _raw_stage = st.session_state.get("stage", "upload")
+    if _raw_stage in _STAGE_MIGRATION:
+        st.session_state.stage = _STAGE_MIGRATION[_raw_stage]
+
     render_sidebar()
     stage = st.session_state.stage
     # Keep URL in sync with current stage
     st.query_params["stage"] = stage
 
-    if stage == "select_service":
-        render_select_service()
-    elif stage == "upload":
+    if stage == "upload":
         render_upload()
-    elif stage == "upload_certs":
-        render_upload_certs()
-    elif stage == "processing":
+    elif stage == "process":
         _run_pipeline()
-    elif stage == "review_changes":
+    elif stage == "review":
         render_review_changes()
-    elif stage == "full_preview":
-        render_full_preview()
-    elif stage == "select_template":
+    elif stage == "template":
         render_select_template()
-    elif stage == "results":
+    elif stage == "edit":
+        render_edit()
+    elif stage == "download":
         render_results()
+    elif stage == "queue":
+        render_queue()
     elif stage == "admin":
         if st.session_state.get("user_role") == "admin":
             render_admin_dashboard()
         else:
             st.error("Access denied.")
-            _go_to_stage("select_service")
+            _go_to_stage("upload")
 
 
 if __name__ == "__main__":
