@@ -664,30 +664,46 @@ def _parse_experience(text: str) -> list[dict]:
 def _parse_education(text: str) -> list[dict]:
     if not text:
         return []
+
+    _DEGREE_KW_RE = re.compile(
+        r"\b(bachelor|master|phd|mba|bsc|msc|diploma|ba|ma|md|jd)\b", re.I
+    )
+    _EDU_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
+
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    buckets: list[list[str]] = []
+    for line in lines:
+        if _DEGREE_KW_RE.search(line) or _EDU_YEAR_RE.search(line):
+            buckets.append([line])
+        elif buckets:
+            buckets[-1].append(line)
+
     entries = []
-    blocks = re.split(r"\n{2,}", text)
-    for block in blocks:
-        lines = [l.strip() for l in block.splitlines() if l.strip()]
-        if not lines:
+    for bucket in buckets:
+        if not bucket:
             continue
-        degree, institution, location, year, gpa, honors = "", "", "", "", "", ""
-        for line in lines:
-            dates = _DATE_RE.findall(line)
-            if dates:
-                year = dates[-1]
-            if re.search(r"\b(bachelor|master|phd|mba|b\.s|m\.s|b\.a|m\.a|bsc|msc|md|jd)\b", line, re.I):
-                degree = line
-            elif re.search(r"\b(university|college|institute|school|academy)\b", line, re.I):
-                institution = line
-            elif re.search(r"\bgpa\b", line, re.I):
-                gpa = line
-            elif re.search(r"\b(honor|cum laude|distinction)\b", line, re.I):
-                honors = line
+        primary = bucket[0]
+        parts = re.split(r"\s+[-|]\s+", primary)
+        degree = parts[0].strip() if parts else primary
+        institution = parts[1].strip() if len(parts) > 1 else ""
+        years = _EDU_YEAR_RE.findall(primary)
+        year = years[-1] if years else ""
+        degree = _EDU_YEAR_RE.sub("", degree).strip(" -|")
+        institution = _EDU_YEAR_RE.sub("", institution).strip(" -|")
+        gpa = ""
+        honors = ""
+        for extra in bucket[1:]:
+            if re.search(r"\bgpa\b", extra, re.I):
+                gpa = extra
+            elif re.search(r"\b(honor|cum laude|distinction)\b", extra, re.I):
+                honors = extra
+            elif not institution:
+                institution = extra
         if degree or institution:
             entries.append({
                 "degree": degree,
                 "institution": institution,
-                "location": location,
+                "location": "",
                 "year": year,
                 "gpa": gpa,
                 "honors": honors,
@@ -964,35 +980,52 @@ def _parse_training(text: str) -> list[dict]:
     """Parse professional training / courses section into structured entries."""
     if not text:
         return []
-    entries = []
+
+    _YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
     _SKIP_HEADINGS = {"COMPUTER SKILLS", "REFERENCES", "HOBBIES", "LANGUAGE", "LANGUAGES"}
-    blocks = re.split(r"\n{2,}", text.strip())
-    for block in blocks:
-        lines = [
-            l.strip(" \u2022\uf0b7\u2022-\u2013\u2014*\u00b7").strip()
-            for l in block.splitlines()
-            if l.strip(" \u2022\uf0b7\u2022-\u2013\u2014*\u00b7").strip()
-        ]
-        lines = [l for l in lines if len(l) > 3]
-        if not lines:
+
+    raw_lines = [
+        l.strip(" \u2022\uf0b7\u2022-\u2013\u2014*\u00b7").strip()
+        for l in text.splitlines()
+        if l.strip(" \u2022\uf0b7\u2022-\u2013\u2014*\u00b7").strip()
+    ]
+    lines = [l for l in raw_lines if len(l) > 3]
+
+    buckets: list[list[str]] = []
+    for line in lines:
+        if _YEAR_RE.search(line):
+            buckets.append([line])
+        elif buckets:
+            buckets[-1].append(line)
+
+    entries = []
+    for bucket in buckets:
+        if not bucket:
             continue
-        dates = _DATE_RE.findall(block)
-        date = (
-            f"{dates[0]} \u2013 {dates[1]}" if len(dates) >= 2
-            else (dates[0] if dates else "")
-        )
-        name_line = lines[0] if lines else ""
-        org_line = lines[1] if len(lines) > 1 else ""
-        desc_lines = lines[2:] if len(lines) > 2 else []
-        if any(skip in name_line.upper() for skip in _SKIP_HEADINGS):
+        primary = bucket[0]
+        if any(skip in primary.upper() for skip in _SKIP_HEADINGS):
             continue
-        entries.append({
-            "name": _DATE_RE.sub("", name_line).strip(" ()-"),
-            "organisation": _DATE_RE.sub("", org_line).strip(" ()-") if org_line else "",
-            "date": date,
-            "description": " ".join(desc_lines),
-        })
-    return [e for e in entries if e["name"] and len(e["name"]) > 3]
+        # Split on " - " or " | " with surrounding spaces (not bare hyphens,
+        # so names like SHRM-SCP are preserved)
+        parts = re.split(r"\s+[-|]\s+", primary)
+        name = parts[0].strip() if parts else primary
+        org = parts[1].strip() if len(parts) > 1 else ""
+        desc_parts = parts[3:] if len(parts) > 3 else []
+        years = _YEAR_RE.findall(primary)
+        date = years[0] if years else ""
+        name_clean = _YEAR_RE.sub("", name).strip(" -|")
+        org_clean = _YEAR_RE.sub("", org).strip(" -|")
+        desc_frags = [_YEAR_RE.sub("", p).strip(" -|") for p in desc_parts]
+        desc_frags += bucket[1:]
+        description = " ".join(d for d in desc_frags if d)
+        if name_clean and len(name_clean) > 3:
+            entries.append({
+                "name": name_clean,
+                "organisation": org_clean,
+                "date": date,
+                "description": description,
+            })
+    return entries
 
 
 # ── Projects parser ───────────────────────────────────────────────────────────
