@@ -28,7 +28,7 @@ _CV_SCHEMA = {
     "linkedin": "string",
     "github": "string (GitHub profile URL, if present)",
     "website": "string",
-    "dob": "string (date of birth — preserve exactly as written, e.g. '15 Jan 1990')",
+    "dob": "string — labelled 'Date of Birth' in output, preserve value exactly",
     "nationality": "string (e.g. 'Egyptian' — preserve exactly)",
     "marital_status": "string (e.g. 'Single', 'Married' — preserve exactly, leave empty if absent)",
     "military_status": "string (military service status if provided, e.g. 'Exempted', 'Completed' — preserve exactly, leave empty if absent)",
@@ -64,6 +64,9 @@ _CV_SCHEMA = {
     "languages": ["string"],
     "projects": [{"name": "string", "description": "string", "technologies": ["string"]}],
     "flags": [{"section": "string", "issue": "string — description of what was detected but not changed"}],
+    "skill_validation_questions": [
+        "string — a specific question to ask the candidate to validate or expand on a listed skill"
+    ],
 }
 
 _LINKEDIN_SCHEMA = {
