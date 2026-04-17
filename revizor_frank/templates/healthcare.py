@@ -7,6 +7,7 @@ from revizor_frank.templates.base_template import BaseTemplate, TemplateStyle
 
 class HealthcareTemplate(BaseTemplate):
     name = "Healthcare"
+    layout = "two_column_left_sidebar"
 
     def __init__(self):
         super().__init__()

@@ -8,6 +8,7 @@ from revizor_frank.templates.base_template import BaseTemplate, TemplateStyle
 
 class TechnicalTemplate(BaseTemplate):
     name = "Technical / Engineering"
+    layout = "boxed_sections"
 
     def __init__(self):
         super().__init__()

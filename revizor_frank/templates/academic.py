@@ -8,6 +8,7 @@ from revizor_frank.templates.base_template import BaseTemplate, TemplateStyle
 
 class AcademicTemplate(BaseTemplate):
     name = "Academic"
+    layout = "single_column"
 
     def __init__(self):
         super().__init__()

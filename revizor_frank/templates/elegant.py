@@ -7,6 +7,7 @@ from revizor_frank.templates.base_template import BaseTemplate, TemplateStyle
 
 class ElegantTemplate(BaseTemplate):
     name = "Elegant"
+    layout = "split_header"
 
     def __init__(self):
         super().__init__()

@@ -2385,11 +2385,12 @@ def _generate_template_thumbnail(template_name: str) -> bytes:
         return b""
 
 
-def _render_cv_html_preview(cv: dict, color: str = ""):
+def _render_cv_html_preview(cv: dict, color: str = "", layout: str = "single_column"):
     """Render CV as styled HTML in a scrollable preview panel.
 
     Uses st.components.v1.html — no PDF generation, no external libraries.
     Full content is always visible regardless of CV length.
+    layout: one of the 9 layout strings from BaseTemplate.
     """
     import streamlit.components.v1 as _components
 
@@ -2401,29 +2402,79 @@ def _render_cv_html_preview(cv: dict, color: str = ""):
                 .replace("<", "&lt;")
                 .replace(">", "&gt;"))
 
+    is_sidebar    = layout in ("two_column_left_sidebar", "two_column_right_sidebar")
+    is_banner     = layout == "header_banner"
+    is_split      = layout == "split_header"
+    is_timeline   = layout == "timeline"
+    is_boxed      = layout == "boxed_sections"
+    is_centered   = layout == "minimal_centered"
+    is_two_col    = layout == "compact_two_column"
+
+    # Base CSS
+    _sh_css = (
+        f"border-left:3px solid {primary};padding-left:6px;"
+        if is_timeline else
+        (f"border:1px solid {primary};border-radius:3px;overflow:hidden;margin-bottom:8px;"
+         if is_boxed else
+         f"color:{primary};font-size:10.5pt;text-transform:uppercase;"
+         f"{'margin-top:12px;' if is_centered else 'border-bottom:1.5px solid ' + primary + ';'}"
+         f"margin-bottom:5px;padding-bottom:2px;")
+    )
+
     parts: list[str] = [f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"/>
 <style>
-  body{{font-family:'Segoe UI',Arial,sans-serif;margin:0;padding:1rem 2rem;
+  body{{font-family:'Segoe UI',Arial,sans-serif;margin:0;padding:{'0' if is_sidebar or is_banner else '1rem 2rem'};
         color:#222;font-size:9.5pt;line-height:1.45;}}
-  h1.nm{{color:{primary};font-size:22pt;margin:0 0 3px 0;}}
-  h2.jt{{color:#555;font-size:11pt;font-weight:normal;font-style:italic;margin:0 0 4px 0;}}
-  .ct{{font-size:8.5pt;color:#555;margin-bottom:12px;}}
-  h3.sh{{color:{primary};font-size:10.5pt;text-transform:uppercase;
-          border-bottom:1.5px solid {primary};margin:16px 0 5px 0;padding-bottom:2px;}}
+  h1.nm{{color:{primary};font-size:22pt;margin:0 0 3px 0;
+          {'text-align:center;' if is_centered else ''}}}
+  h2.jt{{color:#555;font-size:11pt;font-weight:normal;font-style:italic;margin:0 0 4px 0;
+          {'text-align:center;' if is_centered else ''}}}
+  .ct{{font-size:8.5pt;color:#555;margin-bottom:12px;
+       {'text-align:center;' if is_centered else ''}}}
+  h3.sh{{{_sh_css}}}
+  .sh-inner{{background:{primary};color:#fff;font-size:9pt;text-transform:uppercase;
+             font-weight:bold;padding:4px 8px;margin:0;}}
+  .sh-body{{padding:8px;background:#f0f4f8;}}
   .eh{{font-weight:bold;color:{primary};font-size:10pt;margin-bottom:1px;}}
   .em{{color:#555;font-size:8.5pt;margin-bottom:4px;}}
   ul{{margin:3px 0 8px 0;padding-left:18px;}}
   li{{margin-bottom:2px;}}
   .tp{{display:inline-block;background:#eef2ff;border:1px solid #c7d2fe;
         border-radius:3px;padding:1px 5px;margin:2px 1px;font-size:8pt;}}
+  /* banner */
+  .banner{{background:{primary};color:#fff;padding:16px 24px;margin-bottom:16px;}}
+  .banner h1{{color:#fff;font-size:22pt;margin:0 0 3px 0;}}
+  .banner h2{{color:#ddd;font-size:11pt;font-weight:normal;margin:0 0 4px 0;}}
+  .banner .ct{{color:#ccc;margin-bottom:0;}}
+  /* sidebar */
+  .pg-wrap{{display:grid;grid-template-columns:33% 67%;min-height:100vh;}}
+  .sidebar{{background:{primary};color:#ddd;padding:14px 10px;font-size:8pt;}}
+  .sidebar h1{{color:#fff;font-size:15pt;margin:0 0 4px 0;word-wrap:break-word;}}
+  .sidebar h2{{color:#ccc;font-size:9pt;font-weight:normal;margin:0 0 8px 0;}}
+  .sidebar h3{{color:#fff;font-size:8.5pt;text-transform:uppercase;
+               border-bottom:1px solid rgba(255,255,255,.3);margin-top:10px;margin-bottom:4px;}}
+  .main{{padding:14px 18px;}}
+  /* split-header */
+  .split-hdr{{display:flex;margin-bottom:12px;}}
+  .photo-box{{width:30%;background:#888;color:#fff;display:flex;flex-direction:column;
+              align-items:center;justify-content:center;min-height:80px;font-size:9pt;}}
+  .hdr-info{{flex:1;padding:8px 0 8px 16px;}}
+  /* timeline */
+  .tl-row{{display:flex;margin-bottom:8px;}}
+  .tl-date{{width:65px;min-width:65px;font-size:8pt;color:{primary};font-weight:bold;
+            padding-right:8px;text-align:right;}}
+  .tl-line{{width:2px;background:{primary};margin-right:10px;}}
+  .tl-body{{flex:1;}}
+  /* two-column body */
+  .two-col{{display:grid;grid-template-columns:1fr 1fr;gap:0 8px;}}
+  .two-col-left,.two-col-right{{padding:0 6px;}}
+  .two-col-left{{border-right:1px solid #ddd;}}
 </style>
 </head><body>"""]
 
-    # ── Header
-    parts.append(f'<h1 class="nm">{_esc(cv.get("name",""))}</h1>')
-    if cv.get("title"):
-        parts.append(f'<h2 class="jt">{_esc(cv["title"])}</h2>')
+    # ── Layout-specific header rendering ─────────────────────────────────────
+
     _html_phones = cv.get("phones") or (
         [p.strip() for p in cv["phone"].split("|") if p.strip()]
         if cv.get("phone") else []
@@ -2436,56 +2487,113 @@ def _render_cv_html_preview(cv: dict, color: str = ""):
     for _f in ("location", "linkedin", "website"):
         if cv.get(_f):
             contact_items.append(_esc(cv[_f]))
-    if contact_items:
-        parts.append(f'<div class="ct">{" | ".join(contact_items)}</div>')
-    if cv.get("dob"):
-        parts.append(f'<div class="ct">DOB: {_esc(cv["dob"])}</div>')
+    contact_str = " | ".join(contact_items)
 
-    # ── Summary
-    if cv.get("summary"):
-        parts.append('<h3 class="sh">Professional Summary</h3>')
-        parts.append(f'<p>{_esc(cv["summary"])}</p>')
+    if is_banner:
+        parts.append(f'<div class="banner"><h1>{_esc(cv.get("name",""))}</h1>')
+        if cv.get("title"):
+            parts.append(f'<h2>{_esc(cv["title"])}</h2>')
+        if contact_str:
+            parts.append(f'<div class="ct">{contact_str}</div>')
+        parts.append("</div>")
+        parts.append('<div style="padding:0 24px;">')
+        # Main content below banner rendered at end
+    elif is_sidebar:
+        parts.append('<div class="pg-wrap"><div class="sidebar">')
+        parts.append(f'<h1>{_esc(cv.get("name",""))}</h1>')
+        if cv.get("title"):
+            parts.append(f'<h2>{_esc(cv["title"])}</h2>')
+        # Contact section in sidebar
+        parts.append('<h3>Contact</h3>')
+        for item in contact_items:
+            parts.append(f'<div>{item}</div>')
+        if cv.get("dob"):
+            parts.append(f'<div>DOB: {_esc(cv["dob"])}</div>')
+        # Skills in sidebar
+        for cat in cv.get("skills", {}).get("categories", []):
+            its = cat.get("items", [])
+            if its:
+                parts.append(f'<h3>{_esc(cat.get("name","Skills"))}</h3>')
+                for i in its:
+                    parts.append(f'<div>• {_esc(i)}</div>')
+        # Languages in sidebar
+        if cv.get("languages"):
+            parts.append('<h3>Languages</h3>')
+            for l in cv["languages"]:
+                parts.append(f'<div>• {_esc(l)}</div>')
+        parts.append('</div><div class="main">')  # end sidebar, start main
+        # Header is done — main content rendered at end (skip skills/languages)
+    elif is_split:
+        parts.append('<div class="split-hdr">')
+        parts.append('<div class="photo-box">[Photo]<br/><small>Placeholder</small></div>')
+        parts.append('<div class="hdr-info">')
+        parts.append(f'<h1 class="nm">{_esc(cv.get("name",""))}</h1>')
+        if cv.get("title"):
+            parts.append(f'<h2 class="jt">{_esc(cv["title"])}</h2>')
+        if contact_str:
+            parts.append(f'<div class="ct">{contact_str}</div>')
+        parts.append('</div></div>')  # end hdr-info, end split-hdr
+    else:
+        # Default header (single_column, timeline, boxed, centered, two_col)
+        parts.append(f'<h1 class="nm">{_esc(cv.get("name",""))}</h1>')
+        if cv.get("title"):
+            parts.append(f'<h2 class="jt">{_esc(cv["title"])}</h2>')
+    # Non-sidebar/banner layouts: show contact in body
+    if not is_banner and not is_sidebar:
+        if contact_str:
+            parts.append(f'<div class="ct">{contact_str}</div>')
+        if cv.get("dob"):
+            parts.append(f'<div class="ct">DOB: {_esc(cv["dob"])}</div>')
 
-    # ── Experience
-    if cv.get("experience"):
-        parts.append('<h3 class="sh">Professional Experience</h3>')
-        for exp in cv["experience"]:
-            t = _esc(exp.get("title", ""))
-            c = _esc(exp.get("company", ""))
-            loc = _esc(exp.get("location", ""))
-            sd = exp.get("start_date", "")
-            ed = exp.get("end_date", "")
-            dates = _esc(f"{sd} – {ed}".strip(" –")) if (sd or ed) else ""
-            meta = " | ".join(p for p in [c, loc, dates] if p)
-            if t:
-                parts.append(f'<div class="eh">{t}</div>')
-            if meta:
-                parts.append(f'<div class="em">{meta}</div>')
-            bullets = exp.get("bullets", [])
-            if bullets:
-                parts.append("<ul>" + "".join(f"<li>{_esc(b)}</li>" for b in bullets) + "</ul>")
+    # ── Section helper that produces the correct heading markup per layout
+    def _sh(title: str) -> str:
+        if is_boxed:
+            return f'<div class="sh"><div class="sh-inner">{_esc(title.upper())}</div><div class="sh-body">'
+        return f'<h3 class="sh">{_esc(title.upper())}</h3>'
 
-    # ── Education
-    if cv.get("education"):
-        parts.append('<h3 class="sh">Education</h3>')
-        for edu in cv["education"]:
-            deg = _esc(edu.get("degree", ""))
-            inst = _esc(edu.get("institution", ""))
-            yr = _esc(edu.get("year", ""))
-            honors = _esc(edu.get("honors", ""))
-            meta = " | ".join(p for p in [inst, yr] if p)
-            if deg:
-                parts.append(f'<div class="eh">{deg}</div>')
-            if meta:
-                parts.append(f'<div class="em">{meta}</div>')
-            if honors:
-                parts.append(f'<div class="em">{honors}</div>')
+    def _sh_close() -> str:
+        return '</div></div>' if is_boxed else ''
 
-    # ── Skills
-    skill_cats = cv.get("skills", {}).get("categories", [])
-    if skill_cats:
-        parts.append('<h3 class="sh">Skills</h3>')
-        for cat in skill_cats:
+    # ── Build sections helper
+    def _exp_section(exp_list):
+        if is_timeline:
+            for exp in exp_list:
+                sd = exp.get("start_date", "")
+                ed = exp.get("end_date", "")
+                dr = f"{sd}<br/>–<br/>{ed}" if (sd or ed) else ""
+                co = " | ".join(filter(None, [
+                    _esc(exp.get("company", "")),
+                    _esc(exp.get("location", "")),
+                ]))
+                parts.append(f'<div class="tl-row">'
+                              f'<div class="tl-date">{dr}</div>'
+                              f'<div class="tl-line"></div>'
+                              f'<div class="tl-body">'
+                              f'<div class="eh">{_esc(exp.get("title",""))}</div>'
+                              f'<div class="em">{co}</div>')
+                buls = exp.get("bullets", [])
+                if buls:
+                    parts.append("<ul>" + "".join(f"<li>{_esc(b)}</li>" for b in buls) + "</ul>")
+                parts.append("</div></div>")
+        else:
+            for exp in exp_list:
+                t   = _esc(exp.get("title", ""))
+                c   = _esc(exp.get("company", ""))
+                loc = _esc(exp.get("location", ""))
+                sd  = exp.get("start_date", "")
+                ed  = exp.get("end_date", "")
+                dates = _esc(f"{sd} – {ed}".strip(" –")) if (sd or ed) else ""
+                meta = " | ".join(p for p in [c, loc, dates] if p)
+                if t:
+                    parts.append(f'<div class="eh">{t}</div>')
+                if meta:
+                    parts.append(f'<div class="em">{meta}</div>')
+                buls = exp.get("bullets", [])
+                if buls:
+                    parts.append("<ul>" + "".join(f"<li>{_esc(b)}</li>" for b in buls) + "</ul>")
+
+    def _skills_section(cats):
+        for cat in cats:
             items = cat.get("items", [])
             if not items:
                 continue
@@ -2496,47 +2604,174 @@ def _render_cv_html_preview(cv: dict, color: str = ""):
             else:
                 parts.append(f'<div><strong>{cat_name}:</strong> {_esc(", ".join(items))}</div>')
 
-    # ── Certifications
-    certs = cv.get("certifications", [])
-    if certs:
-        parts.append('<h3 class="sh">Certifications</h3><ul>')
-        for cert in certs:
-            n = _esc(cert.get("name", ""))
-            iss = _esc(cert.get("issuer", ""))
-            dt = _esc(cert.get("date", ""))
-            meta = " | ".join(p for p in [iss, dt] if p)
-            parts.append(f'<li><strong>{n}</strong>{(" — " + meta) if meta else ""}</li>')
-        parts.append("</ul>")
+    if is_two_col:
+        # Summary full-width, then two-column body
+        if cv.get("summary"):
+            parts.append(_sh("Professional Summary"))
+            parts.append(f'<p>{_esc(cv["summary"])}</p>{_sh_close()}')
+        parts.append('<div class="two-col"><div class="two-col-left">')
+        # Left: experience + projects
+        if cv.get("experience"):
+            parts.append(_sh("Professional Experience"))
+            _exp_section(cv["experience"])
+            parts.append(_sh_close())
+        if cv.get("projects"):
+            parts.append(_sh("Projects"))
+            for proj in cv["projects"]:
+                pn = _esc(proj.get("name", ""))
+                pd = _esc(proj.get("description", ""))
+                if pn:
+                    parts.append(f'<div class="eh">{pn}</div>')
+                if pd:
+                    parts.append(f'<p style="margin:2px 0 8px 0">{pd}</p>')
+            parts.append(_sh_close())
+        parts.append('</div><div class="two-col-right">')
+        # Right: education + skills + languages + training + certs
+        if cv.get("education"):
+            parts.append(_sh("Education"))
+            for edu in cv["education"]:
+                deg  = _esc(edu.get("degree", ""))
+                inst = _esc(edu.get("institution", ""))
+                yr   = _esc(edu.get("year", ""))
+                meta = " | ".join(p for p in [inst, yr] if p)
+                if deg:
+                    parts.append(f'<div class="eh">{deg}</div>')
+                if meta:
+                    parts.append(f'<div class="em">{meta}</div>')
+            parts.append(_sh_close())
+        skill_cats = cv.get("skills", {}).get("categories", [])
+        if skill_cats:
+            parts.append(_sh("Skills"))
+            _skills_section(skill_cats)
+            parts.append(_sh_close())
+        if cv.get("languages"):
+            parts.append(_sh("Languages"))
+            parts.append(f'<p>{_esc(", ".join(str(l) for l in cv["languages"]))}</p>')
+            parts.append(_sh_close())
+        if cv.get("certifications"):
+            parts.append(_sh("Certifications"))
+            parts.append("<ul>" + "".join(
+                f'<li>{_esc(c.get("name",""))} — {_esc(c.get("issuer",""))}</li>'
+                for c in cv["certifications"]) + "</ul>")
+            parts.append(_sh_close())
+        if cv.get("training"):
+            parts.append(_sh("Professional Training"))
+            parts.append("<ul>" + "".join(
+                f'<li>{_esc(t.get("name",""))} — {_esc(t.get("organisation",""))}</li>'
+                for t in cv["training"]) + "</ul>")
+            parts.append(_sh_close())
+        parts.append('</div></div>')  # close two-col-right + two-col
 
-    # ── Training
-    training = cv.get("training", [])
-    if training:
-        parts.append('<h3 class="sh">Professional Training</h3><ul>')
-        for tr in training:
-            n = _esc(tr.get("name", ""))
-            org = _esc(tr.get("organisation", ""))
-            dt = _esc(tr.get("date", ""))
-            meta = " | ".join(p for p in [org, dt] if p)
-            parts.append(f'<li><strong>{n}</strong>{(" — " + meta) if meta else ""}</li>')
-        parts.append("</ul>")
+    elif is_sidebar:
+        # Main content (sidebar already has skills/languages)
+        if cv.get("summary"):
+            parts.append(_sh("Professional Summary"))
+            parts.append(f'<p>{_esc(cv["summary"])}</p>{_sh_close()}')
+        if cv.get("experience"):
+            parts.append(_sh("Professional Experience"))
+            _exp_section(cv["experience"])
+            parts.append(_sh_close())
+        if cv.get("education"):
+            parts.append(_sh("Education"))
+            for edu in cv["education"]:
+                deg  = _esc(edu.get("degree", ""))
+                inst = _esc(edu.get("institution", ""))
+                yr   = _esc(edu.get("year", ""))
+                meta = " | ".join(p for p in [inst, yr] if p)
+                if deg:
+                    parts.append(f'<div class="eh">{deg}</div>')
+                if meta:
+                    parts.append(f'<div class="em">{meta}</div>')
+            parts.append(_sh_close())
+        if cv.get("certifications"):
+            parts.append(_sh("Certifications"))
+            parts.append("<ul>" + "".join(
+                f'<li>{_esc(c.get("name",""))} — {_esc(c.get("issuer",""))}</li>'
+                for c in cv["certifications"]) + "</ul>")
+            parts.append(_sh_close())
+        if cv.get("training"):
+            parts.append(_sh("Professional Training"))
+            parts.append("<ul>" + "".join(
+                f'<li>{_esc(t.get("name",""))} — {_esc(t.get("organisation",""))}</li>'
+                for t in cv["training"]) + "</ul>")
+            parts.append(_sh_close())
+        parts.append('</div></div>')  # close main + pg-wrap
 
-    # ── Languages
-    langs = cv.get("languages", [])
-    if langs:
-        parts.append('<h3 class="sh">Languages</h3>')
-        parts.append(f'<p>{_esc(", ".join(str(l) for l in langs))}</p>')
+    else:
+        # Single-column / banner / split / timeline / boxed / centered
+        if cv.get("summary"):
+            parts.append(_sh("Professional Summary"))
+            parts.append(f'<p>{_esc(cv["summary"])}</p>{_sh_close()}')
 
-    # ── Projects
-    projects = cv.get("projects", [])
-    if projects:
-        parts.append('<h3 class="sh">Projects</h3>')
-        for proj in projects:
-            pn = _esc(proj.get("name", ""))
-            pd = _esc(proj.get("description", ""))
-            if pn:
-                parts.append(f'<div class="eh">{pn}</div>')
-            if pd:
-                parts.append(f'<p style="margin:2px 0 8px 0">{pd}</p>')
+        if cv.get("experience"):
+            parts.append(_sh("Professional Experience"))
+            _exp_section(cv["experience"])
+            parts.append(_sh_close())
+
+        if cv.get("education"):
+            parts.append(_sh("Education"))
+            for edu in cv["education"]:
+                deg  = _esc(edu.get("degree", ""))
+                inst = _esc(edu.get("institution", ""))
+                yr   = _esc(edu.get("year", ""))
+                honors = _esc(edu.get("honors", ""))
+                meta = " | ".join(p for p in [inst, yr] if p)
+                if deg:
+                    parts.append(f'<div class="eh">{deg}</div>')
+                if meta:
+                    parts.append(f'<div class="em">{meta}</div>')
+                if honors:
+                    parts.append(f'<div class="em">{honors}</div>')
+            parts.append(_sh_close())
+
+        skill_cats = cv.get("skills", {}).get("categories", [])
+        if skill_cats:
+            parts.append(_sh("Skills"))
+            _skills_section(skill_cats)
+            parts.append(_sh_close())
+
+        # Certs / training / languages / projects for non-sidebar, non-two-col layouts
+        certs = cv.get("certifications", [])
+        if certs:
+            parts.append(_sh("Certifications") + "<ul>")
+            for cert in certs:
+                n = _esc(cert.get("name", ""))
+                iss = _esc(cert.get("issuer", ""))
+                dt = _esc(cert.get("date", ""))
+                meta = " | ".join(p for p in [iss, dt] if p)
+                parts.append(f'<li><strong>{n}</strong>{(" — " + meta) if meta else ""}</li>')
+            parts.append(f"</ul>{_sh_close()}")
+
+        training = cv.get("training", [])
+        if training:
+            parts.append(_sh("Professional Training") + "<ul>")
+            for tr in training:
+                n = _esc(tr.get("name", ""))
+                org = _esc(tr.get("organisation", ""))
+                dt = _esc(tr.get("date", ""))
+                meta = " | ".join(p for p in [org, dt] if p)
+                parts.append(f'<li><strong>{n}</strong>{(" — " + meta) if meta else ""}</li>')
+            parts.append(f"</ul>{_sh_close()}")
+
+        langs = cv.get("languages", [])
+        if langs:
+            parts.append(_sh("Languages"))
+            parts.append(f'<p>{_esc(", ".join(str(l) for l in langs))}</p>{_sh_close()}')
+
+        projects = cv.get("projects", [])
+        if projects:
+            parts.append(_sh("Projects"))
+            for proj in projects:
+                pn = _esc(proj.get("name", ""))
+                pd = _esc(proj.get("description", ""))
+                if pn:
+                    parts.append(f'<div class="eh">{pn}</div>')
+                if pd:
+                    parts.append(f'<p style="margin:2px 0 8px 0">{pd}</p>')
+            parts.append(_sh_close())
+
+        if is_banner:
+            parts.append("</div>")  # close banner content div
 
     parts.append("</body></html>")
     _components.html("".join(parts), height=700, scrolling=True)
@@ -2763,7 +2998,13 @@ def render_select_template():
     if cv_source:
         st.markdown("### 👁️ Live Preview")
         tcolor = st.session_state.get("template_color", "")
-        _render_cv_html_preview(cv_source, tcolor)
+        _selected = st.session_state.get("selected_template", "modern")
+        try:
+            from revizor_frank.templates import get_template as _gt
+            _tmpl_layout = _gt(_selected).layout
+        except Exception:
+            _tmpl_layout = "single_column"
+        _render_cv_html_preview(cv_source, tcolor, layout=_tmpl_layout)
         st.divider()
 
     _render_bottom_nav("review", "Review", "edit", "Use This Template")

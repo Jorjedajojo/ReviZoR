@@ -8,6 +8,7 @@ from revizor_frank.templates.base_template import BaseTemplate, TemplateStyle
 
 class CreativeTemplate(BaseTemplate):
     name = "Creative (ATS-Safe)"
+    layout = "split_header"
 
     def __init__(self):
         super().__init__()

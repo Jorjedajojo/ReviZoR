@@ -7,6 +7,7 @@ from revizor_frank.templates.base_template import BaseTemplate, TemplateStyle
 
 class BoldTemplate(BaseTemplate):
     name = "Bold"
+    layout = "header_banner"
 
     def __init__(self):
         super().__init__()

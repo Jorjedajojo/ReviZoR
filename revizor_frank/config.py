@@ -42,19 +42,28 @@ DB_PATH = STORAGE_DIR / "revizor.db"
 
 # ── Templates ─────────────────────────────────────────────────────────────────
 TEMPLATES: dict[str, dict] = {
-    "classic":    {"name": "Classic Professional",     "ats_safe": True,  "best_for": "General, Finance, Law"},
-    "modern":     {"name": "Modern Minimalist",        "ats_safe": True,  "best_for": "Marketing, Design, Startups"},
-    "executive":  {"name": "Executive",                "ats_safe": True,  "best_for": "C-Suite, Senior Management"},
-    "creative":   {"name": "Creative (ATS-Safe)",      "ats_safe": True,  "best_for": "Media, Advertising, UX"},
-    "technical":  {"name": "Technical / Engineering",  "ats_safe": True,  "best_for": "Software, Engineering, IT"},
-    "academic":   {"name": "Academic",                 "ats_safe": True,  "best_for": "Research, Academia, Science"},
-    "healthcare": {"name": "Healthcare",               "ats_safe": True,  "best_for": "Medical, Nursing, Allied Health"},
-    "graduate":   {"name": "Graduate / Entry-Level",   "ats_safe": True,  "best_for": "Students, Career Changers"},
-    "minimal":    {"name": "Minimal",                  "ats_safe": True,  "best_for": "Any industry, clean presentation"},
-    "bold":       {"name": "Bold",                     "ats_safe": True,  "best_for": "Sales, Business Development, Leadership"},
-    "sidebar":    {"name": "Sidebar",                  "ats_safe": True,  "best_for": "Corporate, Banking, Consulting"},
-    "compact":    {"name": "Compact",                  "ats_safe": True,  "best_for": "Senior professionals, many roles"},
-    "elegant":    {"name": "Elegant",                  "ats_safe": True,  "best_for": "Creative, PR, Fashion, Arts"},
+    # ── Original 13 ───────────────────────────────────────────────────────────
+    "classic":      {"name": "Classic Professional",     "ats_safe": True,  "best_for": "General, Finance, Law"},
+    "modern":       {"name": "Modern Minimalist",        "ats_safe": True,  "best_for": "Marketing, Design, Startups"},
+    "executive":    {"name": "Executive",                "ats_safe": True,  "best_for": "C-Suite, Senior Management"},
+    "creative":     {"name": "Creative (ATS-Safe)",      "ats_safe": True,  "best_for": "Media, Advertising, UX"},
+    "technical":    {"name": "Technical / Engineering",  "ats_safe": True,  "best_for": "Software, Engineering, IT"},
+    "academic":     {"name": "Academic",                 "ats_safe": True,  "best_for": "Research, Academia, Science"},
+    "healthcare":   {"name": "Healthcare",               "ats_safe": True,  "best_for": "Medical, Nursing, Allied Health"},
+    "graduate":     {"name": "Graduate / Entry-Level",   "ats_safe": True,  "best_for": "Students, Career Changers"},
+    "minimal":      {"name": "Minimal",                  "ats_safe": True,  "best_for": "Any industry, clean presentation"},
+    "bold":         {"name": "Bold",                     "ats_safe": True,  "best_for": "Sales, Business Development, Leadership"},
+    "sidebar":      {"name": "Sidebar",                  "ats_safe": True,  "best_for": "Corporate, Banking, Consulting"},
+    "compact":      {"name": "Compact",                  "ats_safe": True,  "best_for": "Senior professionals, many roles"},
+    "elegant":      {"name": "Elegant",                  "ats_safe": True,  "best_for": "Creative, PR, Fashion, Arts"},
+    # ── New 7 ─────────────────────────────────────────────────────────────────
+    "consultant":   {"name": "Consultant",               "ats_safe": True,  "best_for": "Consulting, Finance, Legal"},
+    "corporate":    {"name": "Corporate",                "ats_safe": True,  "best_for": "Banking, Insurance, Enterprise"},
+    "designer":     {"name": "Designer",                 "ats_safe": True,  "best_for": "Design, UX, Creative Agencies"},
+    "monochrome":   {"name": "Monochrome",               "ats_safe": True,  "best_for": "Law, Academia, Traditional sectors"},
+    "timeline_pro": {"name": "Timeline Pro",             "ats_safe": True,  "best_for": "Career progression, Tech, PM"},
+    "boxed":        {"name": "Boxed",                    "ats_safe": True,  "best_for": "IT, Project Management, Corporate"},
+    "dual_column":  {"name": "Dual Column",              "ats_safe": True,  "best_for": "Operations, Engineering, Sales"},
 }
 
 DEFAULT_TEMPLATE = "modern"

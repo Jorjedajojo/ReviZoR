@@ -1,33 +1,47 @@
 """Template registry for ReviZoR FranK."""
 
-from revizor_frank.templates.classic    import ClassicTemplate
-from revizor_frank.templates.modern     import ModernTemplate
-from revizor_frank.templates.executive  import ExecutiveTemplate
-from revizor_frank.templates.creative   import CreativeTemplate
-from revizor_frank.templates.technical  import TechnicalTemplate
-from revizor_frank.templates.academic   import AcademicTemplate
-from revizor_frank.templates.healthcare import HealthcareTemplate
-from revizor_frank.templates.graduate   import GraduateTemplate
-from revizor_frank.templates.minimal    import MinimalTemplate
-from revizor_frank.templates.bold       import BoldTemplate
-from revizor_frank.templates.sidebar    import SidebarTemplate
-from revizor_frank.templates.compact    import CompactTemplate
-from revizor_frank.templates.elegant    import ElegantTemplate
+from revizor_frank.templates.classic      import ClassicTemplate
+from revizor_frank.templates.modern       import ModernTemplate
+from revizor_frank.templates.executive    import ExecutiveTemplate
+from revizor_frank.templates.creative     import CreativeTemplate
+from revizor_frank.templates.technical    import TechnicalTemplate
+from revizor_frank.templates.academic     import AcademicTemplate
+from revizor_frank.templates.healthcare   import HealthcareTemplate
+from revizor_frank.templates.graduate     import GraduateTemplate
+from revizor_frank.templates.minimal      import MinimalTemplate
+from revizor_frank.templates.bold         import BoldTemplate
+from revizor_frank.templates.sidebar      import SidebarTemplate
+from revizor_frank.templates.compact      import CompactTemplate
+from revizor_frank.templates.elegant      import ElegantTemplate
+from revizor_frank.templates.consultant   import ConsultantTemplate
+from revizor_frank.templates.corporate    import CorporateTemplate
+from revizor_frank.templates.designer     import DesignerTemplate
+from revizor_frank.templates.monochrome   import MonochromeTemplate
+from revizor_frank.templates.timeline_pro import TimelineProTemplate
+from revizor_frank.templates.boxed        import BoxedTemplate
+from revizor_frank.templates.dual_column  import DualColumnTemplate
 
 REGISTRY: dict = {
-    "classic":    ClassicTemplate,
-    "modern":     ModernTemplate,
-    "executive":  ExecutiveTemplate,
-    "creative":   CreativeTemplate,
-    "technical":  TechnicalTemplate,
-    "academic":   AcademicTemplate,
-    "healthcare": HealthcareTemplate,
-    "graduate":   GraduateTemplate,
-    "minimal":    MinimalTemplate,
-    "bold":       BoldTemplate,
-    "sidebar":    SidebarTemplate,
-    "compact":    CompactTemplate,
-    "elegant":    ElegantTemplate,
+    "classic":      ClassicTemplate,
+    "modern":       ModernTemplate,
+    "executive":    ExecutiveTemplate,
+    "creative":     CreativeTemplate,
+    "technical":    TechnicalTemplate,
+    "academic":     AcademicTemplate,
+    "healthcare":   HealthcareTemplate,
+    "graduate":     GraduateTemplate,
+    "minimal":      MinimalTemplate,
+    "bold":         BoldTemplate,
+    "sidebar":      SidebarTemplate,
+    "compact":      CompactTemplate,
+    "elegant":      ElegantTemplate,
+    "consultant":   ConsultantTemplate,
+    "corporate":    CorporateTemplate,
+    "designer":     DesignerTemplate,
+    "monochrome":   MonochromeTemplate,
+    "timeline_pro": TimelineProTemplate,
+    "boxed":        BoxedTemplate,
+    "dual_column":  DualColumnTemplate,
 }
 
 

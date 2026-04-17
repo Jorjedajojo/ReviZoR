@@ -7,6 +7,7 @@ from revizor_frank.templates.base_template import BaseTemplate, TemplateStyle
 
 class CompactTemplate(BaseTemplate):
     name = "Compact"
+    layout = "compact_two_column"
 
     def __init__(self):
         super().__init__()

@@ -7,6 +7,7 @@ from revizor_frank.templates.base_template import BaseTemplate, TemplateStyle
 
 class ClassicTemplate(BaseTemplate):
     name = "Classic Professional"
+    layout = "single_column"
 
     def __init__(self):
         super().__init__()

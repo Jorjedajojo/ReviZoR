@@ -7,6 +7,7 @@ from revizor_frank.templates.base_template import BaseTemplate, TemplateStyle
 
 class MinimalTemplate(BaseTemplate):
     name = "Minimal"
+    layout = "minimal_centered"
 
     def __init__(self):
         super().__init__()
