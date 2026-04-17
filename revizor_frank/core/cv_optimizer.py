@@ -128,6 +128,13 @@ RULES:
 16. Preserve neighbourhood, military_status, dob, and nationality fields exactly as provided — do not infer, modify, or remove them.
 17. Always write all output in English. The input has already been translated if needed.
 18. HIGHLIGHT — do not fix — any section where content appears incomplete, inconsistent, or where information seems missing. Flag these sections in the "flags" array: [{{"section": "experience", "issue": "description of what was detected but not changed"}}]. The co-worker reviews flags before finalising.
+19. CONSISTENT OUTPUT STRUCTURE — enforce all of the following without exception:
+    a. Every experience bullet must start with a past-simple action verb (Led, Built, Managed, Delivered, Designed, Implemented, etc.). Never start a bullet with a present participle (Leading, Managing), present simple (Leads), or passive construction (Was responsible for).
+    b. Summary must be exactly 60-100 words. Third-person implied — no "I", "my", or "me".
+    c. Skills: "Core Competencies" category must appear BEFORE "Technical Competencies" in the output.
+    d. Skills: Do NOT append proficiency adjectives to skill names. Write "Excel" not "Excellent Excel" or "Excel (Advanced)". The skill name only.
+    e. Education: degree, institution, and year must be on separate lines (separate fields in the JSON — not concatenated into one string).
+    f. All dates must be in Mon YYYY format (e.g. Jan 2020, Mar 2018). Use "Present" for ongoing roles. Never output year-only dates unless that is all the input provides.
 
 INPUT CV DATA:
 {json.dumps(_clean_for_prompt(cv_data), indent=2)}

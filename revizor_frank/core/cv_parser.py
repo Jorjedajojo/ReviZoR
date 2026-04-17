@@ -209,15 +209,31 @@ def extract_text_from_pdf(file: BinaryIO, api_key: str = "") -> tuple[str, int, 
 
 def extract_text_from_docx(file: BinaryIO) -> str:
     from docx import Document
+    from docx.oxml.ns import qn
+
     doc = Document(io.BytesIO(file.read()))
-    parts = []
-    for para in doc.paragraphs:
-        parts.append(para.text)
-    # Also grab table cells
-    for table in doc.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                parts.append(cell.text)
+    parts: list[str] = []
+
+    def _para_text(para_el) -> str:
+        return "".join(node.text or "" for node in para_el.iter(qn("w:t")))
+
+    def _process(el) -> None:
+        tag = el.tag
+        if tag == qn("w:p"):
+            parts.append(_para_text(el))
+            # text boxes embedded in this paragraph
+            for txbx in el.iter(qn("w:txbxContent")):
+                for child in txbx.iterchildren():
+                    _process(child)
+        elif tag == qn("w:tbl"):
+            for row in el.iter(qn("w:tr")):
+                for cell in row.findall(f".//{qn('w:tc')}"):
+                    cell_lines = [_para_text(p) for p in cell.iter(qn("w:p"))]
+                    parts.append("\n".join(cell_lines))
+
+    for child in doc.element.body.iterchildren():
+        _process(child)
+
     text = "\n".join(parts)
     if len(text.strip()) < 50:
         raise_rvz("RVZ-P001", detail=f"Extracted only {len(text.strip())} chars from DOCX")

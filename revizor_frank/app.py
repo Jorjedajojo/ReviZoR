@@ -171,7 +171,7 @@ st.set_page_config(
 st.markdown("""
 <style>
     .rvz-topnav {
-        position: fixed; top: 0; left: 0; right: 0; z-index: 99999;
+        position: sticky; top: 0; z-index: 999; margin: -1rem -1rem 1rem -1rem;
         background: #ffffff; border-bottom: 1px solid #e9ecef;
         display: flex; align-items: center; justify-content: center;
         padding: 0.5rem 1rem; height: 56px;
@@ -195,7 +195,7 @@ st.markdown("""
     .rvz-lbl { white-space: nowrap; }
     .rvz-conn { width: 32px; height: 2px; background: #e9ecef; margin: 0 0.3rem; flex-shrink: 0; }
     .rvz-conn.done-conn { background: #198754; }
-    .main .block-container { max-width: 1100px; padding-top: 72px !important; }
+    .main .block-container { max-width: 1100px; padding-top: 1rem !important; }
     .stAlert { border-radius: 8px; }
     .metric-card {
         background: #f8f9fa; border-radius: 10px;
@@ -561,8 +561,30 @@ def _start_over():
     for key in list(st.session_state.keys()):
         del st.session_state[key]
     st.session_state.update(auth_keys)
+    st.session_state.stage = "upload"
     st.query_params["stage"] = "upload"
     st.rerun()
+
+
+def _render_bottom_nav(back_stage, back_label, next_stage, next_label,
+                       next_disabled=False, next_callback=None):
+    """Render a consistent back/next row at the bottom of each pipeline stage."""
+    st.divider()
+    col_back, _, col_next = st.columns([2, 3, 2])
+    with col_back:
+        if back_stage and st.button(f"← {back_label}",
+                                    use_container_width=True,
+                                    key=f"botnav_back_{back_stage}_{next_stage}"):
+            _go_to_stage(back_stage)
+    with col_next:
+        if st.button(f"{next_label} →",
+                     type="primary",
+                     use_container_width=True,
+                     disabled=next_disabled,
+                     key=f"botnav_next_{next_stage}"):
+            if next_callback:
+                next_callback()
+            _go_to_stage(next_stage)
 
 
 def _render_top_nav():
@@ -1080,16 +1102,18 @@ language, optimizes for your target role.
                         st.rerun()
 
         # ── Proceed to optimization ───────────────────────────────────────────
-        st.divider()
         if not st.session_state.get("service_tier"):
             st.warning("Please select a service tier above before optimizing.")
-        else:
-            if st.button("🚀 Optimize CV →", type="primary", use_container_width=True,
-                         key="proceed_to_optimize"):
-                st.session_state.job_description = st.session_state.get(
-                    "upload_jd_area", st.session_state.get("job_description", "")
-                ).strip()
-                _go_to_stage("process")
+        _next_disabled = not (
+            st.session_state.get("service_tier") and
+            st.session_state.get("uploaded_cv_bytes")
+        )
+        def _upload_next_cb():
+            st.session_state.job_description = st.session_state.get(
+                "upload_jd_area", st.session_state.get("job_description", "")
+            ).strip()
+        _render_bottom_nav(None, "", "process", "🚀 Optimize CV",
+                           next_disabled=_next_disabled, next_callback=_upload_next_cb)
 
 
 # ── Processing pipeline ───────────────────────────────────────────────────────
@@ -2207,15 +2231,12 @@ def render_review_changes():
                         st.session_state.review_editing = editing
                         st.rerun()
 
-    # ── Bottom Finalise repeat (convenience) ─────────────────────────────────
-    st.divider()
-    _, _bot_mid, _ = st.columns([2, 3, 2])
-    with _bot_mid:
-        if st.button("Finalise CV →", type="primary", use_container_width=True,
-                     disabled=not all_done, key="finalise_bottom"):
-            st.session_state.ai_cv_general = _apply_review_decisions()
-            _go_to_stage("template")
-        st.caption(f"{approved}/{total} sections reviewed")
+    # ── Bottom nav ────────────────────────────────────────────────────────────
+    def _review_finalise():
+        st.session_state.ai_cv_general = _apply_review_decisions()
+    _render_bottom_nav("process", "Process", "template", "Finalise CV",
+                       next_disabled=not all_done, next_callback=_review_finalise)
+    st.caption(f"{approved}/{total} sections reviewed")
 
     _render_questions_panel()
 
@@ -2686,9 +2707,7 @@ def render_select_template():
         _render_cv_html_preview(cv_source, tcolor)
         st.divider()
 
-    if st.button("Use This Template — Download My CV →",
-                 type="primary", use_container_width=True):
-        _go_to_stage("download")
+    _render_bottom_nav("review", "Review", "edit", "Use This Template")
 
 
 # ── Results stage ─────────────────────────────────────────────────────────────
@@ -2827,6 +2846,9 @@ def render_results():
     if _owner_answers_row:
         with tabs[tab_idx]:
             _render_owner_answers_tab(_owner_answers_row)
+
+    _render_bottom_nav("edit", "Edit", "upload", "Start Over",
+                       next_callback=_start_over)
 
 
 def _render_owner_answers_tab(row: dict):
@@ -3905,15 +3927,7 @@ def render_edit():
     include_linkedin = (tier != "cv_only")
     _render_edit_cv_tab(include_linkedin)
 
-    st.divider()
-    col_back, _, col_fwd = st.columns([2, 3, 2])
-    with col_back:
-        if st.button("← Template", use_container_width=True, key="edit_back"):
-            _go_to_stage("template")
-    with col_fwd:
-        if st.button("Download →", type="primary", use_container_width=True,
-                     key="edit_to_download"):
-            _go_to_stage("download")
+    _render_bottom_nav("template", "Template", "download", "Download")
 
 
 # ── Main router ───────────────────────────────────────────────────────────────
