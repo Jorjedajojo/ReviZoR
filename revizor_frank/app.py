@@ -1642,15 +1642,15 @@ def _render_questions_panel():
     if st.button("📤 Send to CV owner", type="primary"):
         # ── Email send ───────────────────────────────────────────────────────
         candidate_email = (
-            st.session_state.get("original_cv", {}).get("email", "")
-            or st.session_state.get("edited_cv", {}).get("email", "")
+            (st.session_state.get("original_cv") or {}).get("email", "")
+            or (st.session_state.get("edited_cv") or {}).get("email", "")
         ).strip()
         if not candidate_email:
             st.error("No candidate email found — please check the original CV.")
         else:
             candidate_name = (
-                st.session_state.get("original_cv", {}).get("name", "")
-                or st.session_state.get("edited_cv", {}).get("name", "Candidate")
+                (st.session_state.get("original_cv") or {}).get("name", "")
+                or (st.session_state.get("edited_cv") or {}).get("name", "Candidate")
             ).strip()
             _email_ok, _email_err = _send_questions_email(
                 to_email=candidate_email,
