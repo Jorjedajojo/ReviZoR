@@ -170,7 +170,32 @@ st.set_page_config(
 # ── CSS overrides ─────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-    .main .block-container { max-width: 1100px; padding-top: 1.5rem; }
+    .rvz-topnav {
+        position: fixed; top: 0; left: 0; right: 0; z-index: 99999;
+        background: #ffffff; border-bottom: 1px solid #e9ecef;
+        display: flex; align-items: center; justify-content: center;
+        padding: 0.5rem 1rem; height: 56px;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+    }
+    .rvz-step {
+        display: flex; align-items: center;
+        font-size: 0.75rem; color: #6c757d;
+    }
+    .rvz-step.active { color: #0d6efd; font-weight: 600; }
+    .rvz-step.done   { color: #198754; }
+    .rvz-dot {
+        width: 24px; height: 24px; border-radius: 50%;
+        background: #e9ecef; color: #6c757d;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 0.7rem; font-weight: 700;
+        margin-right: 0.4rem; flex-shrink: 0;
+    }
+    .rvz-step.active .rvz-dot { background: #0d6efd; color: #fff; }
+    .rvz-step.done   .rvz-dot { background: #198754; color: #fff; }
+    .rvz-lbl { white-space: nowrap; }
+    .rvz-conn { width: 32px; height: 2px; background: #e9ecef; margin: 0 0.3rem; flex-shrink: 0; }
+    .rvz-conn.done-conn { background: #198754; }
+    .main .block-container { max-width: 1100px; padding-top: 72px !important; }
     .stAlert { border-radius: 8px; }
     .metric-card {
         background: #f8f9fa; border-radius: 10px;
@@ -244,6 +269,7 @@ def _init_state():
         # Accomplishments questions workflow
         "questions_list":         [],   # [{id, section_key, source_bullet, text}]
         "questions_generated":    False,
+        "questions_deadline":     None,
         "questions_sent":         False,
         "questions_token":        "",
         # Mandatory fields detection
@@ -540,8 +566,38 @@ def _start_over():
 
 
 def _render_top_nav():
-    """Navigation is now handled by the sidebar — this function is a no-op."""
-    pass
+    """Render fixed top progress bar showing the 6 pipeline stages."""
+    stage  = st.session_state.get("stage", "upload")
+    stages = ["upload", "process", "review", "template", "edit", "download"]
+    labels = ["Upload", "Process", "Review", "Template", "Edit", "Download"]
+
+    _rv = st.session_state.get("review_decisions") or {}
+    done_flags = [
+        bool(st.session_state.get("parsed_cv")),
+        bool(st.session_state.get("ai_cv_general")),
+        bool(_rv and all(v.get("status") in ("approved", "edited") for v in _rv.values())),
+        bool(st.session_state.get("selected_template")),
+        bool(st.session_state.get("edited_cv")),
+        stage == "download",
+    ]
+
+    parts = ['<div class="rvz-topnav">']
+    for i, (s, lbl) in enumerate(zip(stages, labels)):
+        done   = done_flags[i]
+        active = (stage == s)
+        cls    = "rvz-step" + (" done" if done else " active" if active else "")
+        dot    = "✓" if done else str(i + 1)
+        if i > 0:
+            conn_cls = "rvz-conn" + (" done-conn" if done_flags[i - 1] else "")
+            parts.append(f'<div class="{conn_cls}"></div>')
+        parts.append(
+            f'<div class="{cls}">'
+            f'<div class="rvz-dot">{dot}</div>'
+            f'<span class="rvz-lbl">{lbl}</span>'
+            f'</div>'
+        )
+    parts.append('</div>')
+    st.markdown("".join(parts), unsafe_allow_html=True)
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -748,6 +804,7 @@ def render_sidebar():
 # ── Upload stage (service tier + file upload + cert expander) ────────────────
 
 def render_upload():
+    _render_top_nav()
     st.markdown(f"# 📄 {APP_NAME}")
     st.markdown(f"*{S['app_tagline']}*")
 
@@ -1368,6 +1425,24 @@ def _diff_html(old: str, new: str) -> str:
 
 def _cv_section_text(cv: dict, section: str, idx: int = -1) -> str:
     """Convert one CV section (or entry at idx) to a plain-text string for display/editing."""
+    if section == "personal":
+        field_map = [
+            ("name",            "Name"),
+            ("title",           "Title"),
+            ("email",           "Email"),
+            ("phone",           "Phone"),
+            ("location",        "Location"),
+            ("dob",             "Date of Birth"),
+            ("nationality",     "Nationality"),
+            ("military_status", "Military Status"),
+            ("marital_status",  "Marital Status"),
+            ("linkedin",        "LinkedIn"),
+            ("github",          "GitHub"),
+            ("website",         "Website"),
+        ]
+        lines = [f"{lbl}: {cv[fld]}" for fld, lbl in field_map if cv.get(fld)]
+        return "\n".join(lines)
+
     if section == "summary":
         return str(cv.get("summary") or "")
 
@@ -1487,25 +1562,66 @@ def _generate_questions_batch(items: list[tuple[str, str]]) -> list[str]:
 
 
 def _ensure_questions_generated():
-    """Generate questions from ≈-bearing content on first call; no-op after."""
+    """Populate questions_list from AI flags, skill validation questions, and ≈ bullets.
+
+    Runs once per session. Each question gets a source_type and a 7-day deadline.
+    """
     if st.session_state.get("questions_generated"):
         return
+
+    deadline_dt  = datetime.now(timezone.utc) + timedelta(days=7)
+    deadline_iso = deadline_dt.isoformat()
+    st.session_state.questions_deadline = deadline_iso
+
+    questions_list: list[dict] = []
+    seen_texts: set[str] = set()
+
+    ai_cv = st.session_state.get("ai_cv_general") or {}
+
+    for flag in ai_cv.get("flags", []):
+        text = (flag.get("issue") or "").strip()
+        if text and text not in seen_texts:
+            seen_texts.add(text)
+            questions_list.append({
+                "id": uuid.uuid4().hex[:8],
+                "section_key": flag.get("section", ""),
+                "source_bullet": "",
+                "text": text,
+                "source_type": "ai_note",
+                "deadline": deadline_iso,
+            })
+
+    for q_text in ai_cv.get("skill_validation_questions", []):
+        text = (q_text or "").strip()
+        if text and text not in seen_texts:
+            seen_texts.add(text)
+            questions_list.append({
+                "id": uuid.uuid4().hex[:8],
+                "section_key": "skills",
+                "source_bullet": "",
+                "text": text,
+                "source_type": "skill_validation",
+                "deadline": deadline_iso,
+            })
+
     decisions = st.session_state.get("review_decisions", {})
     items = _extract_approx_items(decisions)
     if items:
         with st.spinner("Generating questions from estimated accomplishments…"):
             generated = _generate_questions_batch(items)
-    else:
-        generated = []
-    questions_list = [
-        {
-            "id": uuid.uuid4().hex[:8],
-            "section_key": key,
-            "source_bullet": fragment,
-            "text": q_text,
-        }
-        for (key, fragment), q_text in zip(items, generated)
-    ]
+        for (sec_key, fragment), q_text in zip(items, generated):
+            text = (q_text or "").strip()
+            if text and text not in seen_texts:
+                seen_texts.add(text)
+                questions_list.append({
+                    "id": uuid.uuid4().hex[:8],
+                    "section_key": sec_key,
+                    "source_bullet": fragment,
+                    "text": text,
+                    "source_type": "estimated_figure",
+                    "deadline": deadline_iso,
+                })
+
     st.session_state.questions_list = questions_list
     st.session_state.questions_generated = True
 
@@ -1591,6 +1707,27 @@ def _render_questions_panel():
 
     questions_list: list[dict] = st.session_state.get("questions_list", [])
 
+    # ── Deadline banner ───────────────────────────────────────────────────────
+    _deadline = st.session_state.get("questions_deadline")
+    if _deadline:
+        try:
+            _dl_dt = datetime.fromisoformat(_deadline)
+            _days_left = max(0, (_dl_dt - datetime.now(timezone.utc)).days)
+            st.info(f"⏰ Response deadline: **{_days_left} day(s) remaining** ({_dl_dt.strftime('%d %b %Y')})")
+        except Exception:
+            pass
+    _counts: dict[str, int] = {}
+    for _q in questions_list:
+        _src = _q.get("source_type", "manual")
+        _counts[_src] = _counts.get(_src, 0) + 1
+    if _counts:
+        _parts = []
+        if _counts.get("ai_note"):          _parts.append(f"{_counts['ai_note']} AI note(s)")
+        if _counts.get("estimated_figure"): _parts.append(f"{_counts['estimated_figure']} estimated figure(s)")
+        if _counts.get("skill_validation"): _parts.append(f"{_counts['skill_validation']} skill validation(s)")
+        if _counts.get("manual"):           _parts.append(f"{_counts['manual']} manual")
+        st.caption("Sources: " + " · ".join(_parts))
+
     # ── Add manual question ──────────────────────────────────────────────────
     if st.button("➕ Add question"):
         new_id = uuid.uuid4().hex[:8]
@@ -1599,6 +1736,8 @@ def _render_questions_panel():
             "section_key": "manual",
             "source_bullet": "",
             "text": "",
+            "source_type": "manual",
+            "deadline": st.session_state.get("questions_deadline"),
         })
         st.session_state.questions_list = questions_list
         st.session_state[f"q_chk_{new_id}"] = True
@@ -1785,6 +1924,7 @@ def _init_review_state():
                 "status": "pending", "text": rev,
             }
 
+    _add("personal", "👤 Personal Information", "personal")
     _add("summary", "Summary", "summary")
 
     for i, exp in enumerate(revised.get("experience", [])):
@@ -1817,7 +1957,21 @@ def _apply_review_decisions() -> dict:
         if dec["status"] != "edited":
             continue
         text = dec["text"]
-        if key == "summary":
+        if key == "personal":
+            _personal_map = {
+                "name": "name", "title": "title", "email": "email",
+                "phone": "phone", "location": "location", "linkedin": "linkedin",
+                "github": "github", "website": "website",
+                "date of birth": "dob", "nationality": "nationality",
+                "military status": "military_status", "marital status": "marital_status",
+            }
+            for _line in text.splitlines():
+                if ":" in _line:
+                    _lbl, _, _val = _line.partition(":")
+                    _fld = _personal_map.get(_lbl.strip().lower())
+                    if _fld:
+                        final[_fld] = _val.strip()
+        elif key == "summary":
             final["summary"] = text
         elif key.startswith("exp_"):
             idx = int(key.split("_")[1])
@@ -1947,6 +2101,45 @@ def render_review_changes():
                 if (_flag.get("section") or "").lower() == _flag_section.lower():
                     st.info(f"ℹ️ **AI Note — {_flag['section']}:** {_flag['issue']}")
             _flags_rendered.add(_flag_section)
+
+        if key == "personal":
+            with st.expander(f"{icon} {label}", expanded=True):
+                col_orig, col_edit = st.columns(2)
+                with col_orig:
+                    st.caption("**Original**")
+                    st.markdown(
+                        f'<div style="background:#fff8f8;border:1px solid #e9ecef;'
+                        f'border-radius:6px;padding:0.75rem;font-size:0.85rem;'
+                        f'white-space:pre-wrap;min-height:80px">'
+                        f'{dec["original"] or "<em>(empty)</em>"}</div>',
+                        unsafe_allow_html=True,
+                    )
+                with col_edit:
+                    st.caption("**Edit**")
+                    _personal_edited = st.text_area(
+                        "Personal info",
+                        value=dec.get("text", dec["revised"]),
+                        height=200,
+                        key="ta_personal",
+                        label_visibility="collapsed",
+                    )
+                c_save_p, c_approve_p = st.columns(2)
+                with c_save_p:
+                    if st.button("💾 Save Personal Info", key="save_personal",
+                                 type="primary", use_container_width=True):
+                        dec["text"] = _personal_edited
+                        dec["status"] = "edited"
+                        st.session_state.review_decisions = decisions
+                        _autosave_session()
+                        st.rerun()
+                with c_approve_p:
+                    if st.button("✅ Approve as-is", key="approve_personal",
+                                 use_container_width=True):
+                        dec["status"] = "approved"
+                        st.session_state.review_decisions = decisions
+                        _autosave_session()
+                        st.rerun()
+            continue
 
         with st.expander(f"{icon} {label}", expanded=(status == "pending")):
             if key in editing:
@@ -3577,6 +3770,7 @@ def _send_cv_email(to: str, formats: list) -> tuple:
 
 def render_queue():
     """Candidate queue — list all sessions, filter, resume or start new."""
+    _render_top_nav()
     st.markdown("# 👥 Candidate Queue")
     st.caption("All CV sessions saved for this account.")
     st.divider()
@@ -3697,6 +3891,7 @@ def render_queue():
 
 def render_edit():
     """Standalone Edit CV section between Template and Download."""
+    _render_top_nav()
     st.markdown("# ✏️ Edit CV")
     st.divider()
 

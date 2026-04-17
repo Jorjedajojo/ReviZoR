@@ -50,6 +50,11 @@ TEMPLATES: dict[str, dict] = {
     "academic":   {"name": "Academic",                 "ats_safe": True,  "best_for": "Research, Academia, Science"},
     "healthcare": {"name": "Healthcare",               "ats_safe": True,  "best_for": "Medical, Nursing, Allied Health"},
     "graduate":   {"name": "Graduate / Entry-Level",   "ats_safe": True,  "best_for": "Students, Career Changers"},
+    "minimal":    {"name": "Minimal",                  "ats_safe": True,  "best_for": "Any industry, clean presentation"},
+    "bold":       {"name": "Bold",                     "ats_safe": True,  "best_for": "Sales, Business Development, Leadership"},
+    "sidebar":    {"name": "Sidebar",                  "ats_safe": True,  "best_for": "Corporate, Banking, Consulting"},
+    "compact":    {"name": "Compact",                  "ats_safe": True,  "best_for": "Senior professionals, many roles"},
+    "elegant":    {"name": "Elegant",                  "ats_safe": True,  "best_for": "Creative, PR, Fashion, Arts"},
 }
 
 DEFAULT_TEMPLATE = "modern"

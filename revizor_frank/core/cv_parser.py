@@ -632,14 +632,19 @@ def _parse_experience(text: str) -> list[dict]:
             end = dates[1] if len(dates) > 1 else (
                 "Present" if re.search(r"present|current|now", stripped, re.I) else ""
             )
-            remainder = _DATE_RE.sub("", stripped).strip(" \u2013-|·,").strip()
+            remainder = _DATE_RE.sub("", stripped)
+            remainder = re.sub(r"\b(?:present|current|now)\b", "", remainder, flags=re.I)
+            remainder = remainder.strip(" \u2013-|·,").strip()
+            _rparts   = re.split(r"\s+-\s+", remainder, maxsplit=1)
+            _title    = _rparts[0].strip() if _rparts else ""
+            _company  = _rparts[1].strip() if len(_rparts) > 1 else ""
             current = {
-                "title": "",
-                "company": remainder,
-                "location": "",
+                "title":      _title,
+                "company":    _company,
+                "location":   "",
                 "start_date": start,
-                "end_date": end,
-                "bullets": [],
+                "end_date":   end,
+                "bullets":    [],
             }
             continue
 
@@ -650,8 +655,6 @@ def _parse_experience(text: str) -> list[dict]:
             bullet = re.sub(r"^[\u2022\uf0b7\u2023\u2219\u2013\u2014\-\*•]\s*", "", stripped).strip()
             if bullet and len(bullet) > 5:
                 current["bullets"].append(bullet)
-        elif not current["title"] and stripped:
-            current["title"] = stripped
 
     if current:
         entries.append(current)

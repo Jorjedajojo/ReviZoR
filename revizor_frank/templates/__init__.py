@@ -8,6 +8,11 @@ from revizor_frank.templates.technical  import TechnicalTemplate
 from revizor_frank.templates.academic   import AcademicTemplate
 from revizor_frank.templates.healthcare import HealthcareTemplate
 from revizor_frank.templates.graduate   import GraduateTemplate
+from revizor_frank.templates.minimal    import MinimalTemplate
+from revizor_frank.templates.bold       import BoldTemplate
+from revizor_frank.templates.sidebar    import SidebarTemplate
+from revizor_frank.templates.compact    import CompactTemplate
+from revizor_frank.templates.elegant    import ElegantTemplate
 
 REGISTRY: dict = {
     "classic":    ClassicTemplate,
@@ -18,6 +23,11 @@ REGISTRY: dict = {
     "academic":   AcademicTemplate,
     "healthcare": HealthcareTemplate,
     "graduate":   GraduateTemplate,
+    "minimal":    MinimalTemplate,
+    "bold":       BoldTemplate,
+    "sidebar":    SidebarTemplate,
+    "compact":    CompactTemplate,
+    "elegant":    ElegantTemplate,
 }
 
 
