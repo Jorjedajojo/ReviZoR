@@ -195,7 +195,7 @@ st.markdown("""
     .rvz-lbl { white-space: nowrap; }
     .rvz-conn { width: 32px; height: 2px; background: #e9ecef; margin: 0 0.3rem; flex-shrink: 0; }
     .rvz-conn.done-conn { background: #198754; }
-    .main .block-container { max-width: 1100px; padding-top: 1rem !important; }
+    .main .block-container { max-width: 1100px; padding-top: 1rem !important; overflow: visible !important; }
     .stAlert { border-radius: 8px; }
     .metric-card {
         background: #f8f9fa; border-radius: 10px;
@@ -969,7 +969,18 @@ language, optimizes for your target role.
         st.rerun()  # Stay on upload page — show cert expander
 
     # ── Required-fields warning ───────────────────────────────────────────────
-    _missing = st.session_state.get("missing_fields") or []
+    _missing = list(st.session_state.get("missing_fields") or [])
+    if _missing:
+        _ai_cv = st.session_state.get("ai_cv_general") or {}
+        if _ai_cv:
+            def _ai_has_field(lbl: str) -> bool:
+                _key = lbl.lower().replace(" ", "_")
+                if _ai_cv.get(_key):
+                    return True
+                if "skill" in lbl.lower():
+                    return bool((_ai_cv.get("skills") or {}).get("categories"))
+                return False
+            _missing = [f for f in _missing if not _ai_has_field(f)]
     if _missing:
         st.warning(
             "The following sections were not detected in the uploaded CV:\n\n"
@@ -1102,8 +1113,6 @@ language, optimizes for your target role.
                         st.rerun()
 
         # ── Proceed to optimization ───────────────────────────────────────────
-        if not st.session_state.get("service_tier"):
-            st.warning("Please select a service tier above before optimizing.")
         _next_disabled = not (
             st.session_state.get("service_tier") and
             st.session_state.get("uploaded_cv_bytes")
@@ -1114,6 +1123,11 @@ language, optimizes for your target role.
             ).strip()
         _render_bottom_nav(None, "", "process", "🚀 Optimize CV",
                            next_disabled=_next_disabled, next_callback=_upload_next_cb)
+        if _next_disabled:
+            if not st.session_state.get("uploaded_cv_bytes"):
+                st.caption("Upload a CV above to enable.")
+            else:
+                st.caption("Select a service tier above to enable.")
 
 
 # ── Processing pipeline ───────────────────────────────────────────────────────
@@ -1642,7 +1656,7 @@ def _ensure_questions_generated():
                     "section_key": sec_key,
                     "source_bullet": fragment,
                     "text": text,
-                    "source_type": "estimated_figure",
+                    "source_type": "approx_bullet",
                     "deadline": deadline_iso,
                 })
 
@@ -1651,9 +1665,9 @@ def _ensure_questions_generated():
 
 
 def _render_questions_for_section(section_key: str):
-    """Show questions inline in the diff view — read-only, no widgets."""
+    """Show only ≈-bearing questions inline in the diff view — read-only, no widgets."""
     qs = [q for q in st.session_state.get("questions_list", [])
-          if q["section_key"] == section_key]
+          if q["section_key"] == section_key and q.get("source_type") == "approx_bullet"]
     if not qs:
         st.caption("_No estimated figures._")
         return
@@ -1942,6 +1956,13 @@ def _init_review_state():
                 if _plain:
                     orig = _plain[:400]
         rev  = _cv_section_text(revised,  section, idx)
+        # Second fallback: AI may have reconstructed content from embedded data.
+        # Try offline_cv if original yielded nothing but revised has content.
+        if not orig and rev:
+            if original is not _offline:
+                orig = _clean_for_display(_cv_section_text(_offline, section, idx))
+            if not orig:
+                orig = "(not detected in original file — AI reconstructed from embedded data)"
         if rev:  # only add sections that actually have content
             decisions[key] = {
                 "label": label, "original": orig, "revised": rev,
@@ -2769,6 +2790,20 @@ def render_results():
         )
 
     st.divider()
+
+    # ── Original vs Revised comparison ───────────────────────────────────────
+    with st.expander("📄 View Original vs Revised", expanded=True):
+        _parsed_cv  = st.session_state.get("parsed_cv") or {}
+        _revised_cv = st.session_state.get("edited_cv") or st.session_state.get("ai_cv_general") or {}
+        _orig_text  = _parsed_cv.get("raw_text") or _cv_to_plain_text(_parsed_cv)
+        _rev_text   = _cv_to_text(_revised_cv) if _revised_cv else ""
+        _oc, _rc = st.columns(2)
+        with _oc:
+            st.text_area("Original CV", value=_orig_text, height=400, disabled=True,
+                         key="cmp_original")
+        with _rc:
+            st.text_area("Revised CV", value=_rev_text, height=400, disabled=True,
+                         key="cmp_revised")
 
     tier = st.session_state.get("service_tier", "cv_linkedin")
     include_linkedin = (tier != "cv_only")
