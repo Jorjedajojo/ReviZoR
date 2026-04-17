@@ -107,7 +107,7 @@ def _clean_for_prompt(cv: dict, keep_raw_text: bool = False) -> dict:
 def _build_general_prompt(cv_data: dict) -> str:
     return f"""You are a world-class HR consultant, executive CV writer, and ATS optimization expert.
 
-Your task: Transform the provided CV data into the best possible version for ATS systems and human readers.
+Your task: Transform the provided CV data into the best possible version for ATS systems and human readers. The input text may have been extracted from a multi-column PDF layout. If sections appear interleaved or out of order, reconstruct them — do not discard content.
 
 RULES:
 1. Fix ALL grammar, spelling, and punctuation errors.
@@ -135,6 +135,7 @@ RULES:
     d. Skills: Do NOT append proficiency adjectives to skill names. Write "Excel" not "Excellent Excel" or "Excel (Advanced)". The skill name only.
     e. Education: degree, institution, and year must be on separate lines (separate fields in the JSON — not concatenated into one string).
     f. All dates must be in Mon YYYY format (e.g. Jan 2020, Mar 2018). Use "Present" for ongoing roles. Never output year-only dates unless that is all the input provides.
+20. PRESERVATION OF ENUMERATED ENTRIES: If the input CV text contains numbered entries like '1-', '2-', '11.', etc., or clear company-date patterns (e.g. 'ACME Corp 2020-2022'), you MUST preserve every single one of them as experience entries even if the surrounding formatting is inconsistent or the text appears jumbled from multi-column PDF extraction. Do not drop entries. Do not merge distinct jobs into one. Each numbered entry or each distinct company/date pairing is a separate job. If you are uncertain about the title, put it in the flags array with issue='title unclear for [company]' but still create the entry with company and dates. DROPPING CONTENT IS A WORSE ERROR THAN INCLUDING UNCERTAIN CONTENT.
 
 INPUT CV DATA:
 {json.dumps(_clean_for_prompt(cv_data), indent=2)}

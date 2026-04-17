@@ -105,37 +105,91 @@ def check_required_fields(cv_data: dict) -> list[str]:
 
 # ── Text extraction ────────────────────────────────────────────────────────────
 
+def extract_text_from_pdf_with_layout(file_data: bytes) -> str:
+    """Column-aware PDF text extraction using PyMuPDF blocks.
+
+    Detects multi-column layouts geometrically and re-sorts blocks so that
+    column-1 text appears before column-2 text, eliminating the interleaving
+    that occurs when two-column CVs are read line-by-line.
+    """
+    import fitz
+    doc = fitz.open(stream=file_data, filetype="pdf")
+    all_text_parts: list[str] = []
+    for page in doc:
+        page_width = page.rect.width
+        blocks = page.get_text("blocks")
+        # block tuple: (x0, y0, x1, y1, text, block_no, block_type); type 0 = text
+        text_blocks = [
+            (x0, y0, x1, y1, text)
+            for x0, y0, x1, y1, text, block_no, block_type in blocks
+            if block_type == 0 and text.strip()
+        ]
+        if not text_blocks:
+            continue
+        # Cluster x0 values to detect columns
+        x0_vals = sorted(set(round(b[0] / 10) * 10 for b in text_blocks))
+        gap_threshold = 0.15 * page_width
+        col_starts = [x0_vals[0]]
+        for i in range(1, len(x0_vals)):
+            if x0_vals[i] - x0_vals[i - 1] > gap_threshold:
+                col_starts.append(x0_vals[i])
+        num_cols = len(col_starts)
+        if num_cols >= 2:
+            def get_col(x0: float) -> int:
+                for i in range(len(col_starts) - 1, -1, -1):
+                    if x0 >= col_starts[i] - gap_threshold * 0.5:
+                        return i
+                return 0
+            columns: list[list[tuple]] = [[] for _ in range(num_cols)]
+            for x0, y0, x1, y1, text in text_blocks:
+                columns[get_col(x0)].append((y0, text))
+            page_parts: list[str] = []
+            for col in columns:
+                col.sort(key=lambda t: t[0])
+                page_parts.extend(t[1] for t in col)
+        else:
+            text_blocks.sort(key=lambda b: b[1])
+            page_parts = [b[4] for b in text_blocks]
+        all_text_parts.extend(page_parts)
+    doc.close()
+    result = "\n".join(all_text_parts)
+    if len(result.strip()) < 100:
+        raise ValueError("Layout extraction yielded insufficient text")
+    try:
+        import streamlit as _st
+        _st.session_state["parse_diagnostics"] = {
+            "method": "fitz_layout",
+            "columns_detected": num_cols if text_blocks else 1,
+        }
+    except Exception:
+        pass
+    return result
+
+
 def extract_text_from_pdf(file: BinaryIO, api_key: str = "") -> tuple[str, int, int]:
     """Extract text from a PDF. Returns (text, input_tokens, output_tokens).
 
     Three-step strategy:
-    1. pdfminer.six  — fast, fully local, great for text-based PDFs
-    2. PyMuPDF       — local fallback for PDFs pdfminer can't parse
-    3. Claude vision — final fallback for image-based / designed PDFs that
-                       contain no text layer (e.g. exported from Canva/Figma)
-    Steps 1 and 2 are tried first; Claude vision is only called when both
-    return fewer than 100 characters of meaningful text.
+    1. PyMuPDF layout-aware — column detection + geometric re-sort (best for multi-col CVs)
+    2. pdfminer.six          — fast local fallback for PDFs that fitz can't parse well
+    3. Claude vision         — final fallback for image-based / designed PDFs with no text layer
     """
     data = file.read()
 
-    # ── Step 1: pdfminer.six ─────────────────────────────────────────────────
+    # ── Step 1: fitz layout-aware (column detection) ─────────────────────────
+    try:
+        text = extract_text_from_pdf_with_layout(data)
+        if text and len(text.strip()) >= 100:
+            return text, 0, 0
+    except Exception:
+        pass
+
+    # ── Step 2: pdfminer.six ─────────────────────────────────────────────────
     try:
         from pdfminer.high_level import extract_text as pdfminer_extract
         from pdfminer.layout import LAParams
         laparams = LAParams(line_margin=0.5, char_margin=2.0, word_margin=0.1)
         text = pdfminer_extract(io.BytesIO(data), laparams=laparams)
-        if text and len(text.strip()) > 100:
-            return text, 0, 0
-    except Exception:
-        pass
-
-    # ── Step 2: PyMuPDF ──────────────────────────────────────────────────────
-    try:
-        import fitz
-        doc = fitz.open(stream=data, filetype="pdf")
-        pages = [page.get_text("text") for page in doc]
-        doc.close()
-        text = "\n".join(pages)
         if text and len(text.strip()) > 100:
             return text, 0, 0
     except Exception:
