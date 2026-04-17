@@ -1990,11 +1990,16 @@ def _init_review_state():
 
 
 def _apply_review_decisions() -> dict:
-    """Build final CV dict: start from ai_cv_general, apply any edited sections."""
+    """Build final CV dict: start from ai_cv_general, apply any edited sections.
+
+    Side effects: updates st.session_state.ai_cv_general, edited_cv_text, and
+    flags linkedin_stale so downstream consumers (LinkedIn tab, downloads) see
+    the latest content without stale data.
+    """
     import copy
     from revizor_frank.core.cv_parser import (
         _parse_experience, _parse_education, _parse_skills,
-        _parse_certifications, _parse_languages,
+        _parse_certifications, _parse_languages, _parse_training, _parse_projects,
     )
 
     final = copy.deepcopy(st.session_state.ai_cv_general or st.session_state.offline_cv or {})
@@ -2020,20 +2025,53 @@ def _apply_review_decisions() -> dict:
             final["summary"] = text
         elif key.startswith("exp_"):
             idx = int(key.split("_")[1])
+            orig = final.get("experience", [])
             parsed = _parse_experience(text)
-            if parsed and idx < len(final.get("experience", [])):
-                final["experience"][idx] = parsed[0]
+            if parsed and idx < len(orig):
+                # Merge: prefer parsed fields but fall back to original for missing ones
+                merged = dict(orig[idx])
+                merged.update({k: v for k, v in parsed[0].items() if v})
+                final["experience"][idx] = merged
+            elif parsed:
+                pass  # index out of range — skip rather than corrupt
         elif key.startswith("edu_"):
             idx = int(key.split("_")[1])
+            orig = final.get("education", [])
             parsed = _parse_education(text)
-            if parsed and idx < len(final.get("education", [])):
-                final["education"][idx] = parsed[0]
+            if parsed and idx < len(orig):
+                merged = dict(orig[idx])
+                merged.update({k: v for k, v in parsed[0].items() if v})
+                final["education"][idx] = merged
         elif key == "skills":
-            final["skills"] = _parse_skills(text)
+            parsed = _parse_skills(text)
+            if parsed and parsed.get("categories"):
+                final["skills"] = parsed
+            # else preserve original — don't blank skills on parse failure
         elif key == "certifications":
-            final["certifications"] = _parse_certifications(text)
+            parsed = _parse_certifications(text)
+            if parsed:
+                final["certifications"] = parsed
+        elif key == "training":
+            parsed = _parse_training(text)
+            if parsed:
+                final["training"] = parsed
+        elif key == "projects":
+            parsed = _parse_projects(text)
+            if parsed:
+                final["projects"] = parsed
         elif key == "languages":
-            final["languages"] = _parse_languages(text)
+            parsed = _parse_languages(text)
+            if parsed:
+                final["languages"] = parsed
+
+    # Propagate to session state so all consumers see the updated CV
+    st.session_state.ai_cv_general = final
+    st.session_state.edited_cv_text = _cv_to_text(final)
+    st.session_state.linkedin_stale = True
+    try:
+        st.toast("✅ Edits applied to CV and LinkedIn", icon="✅")
+    except Exception:
+        pass
     return final
 
 
@@ -3002,6 +3040,27 @@ def _render_cv_preview(cv: dict):
 
 
 def _render_linkedin_tab():
+    # Regenerate if review-page edits invalidated the cached LinkedIn output
+    if st.session_state.get("linkedin_stale") and st.session_state.get("online") and st.session_state.get("ai_cv_general"):
+        with st.spinner("Refreshing LinkedIn profile from latest CV edits…"):
+            try:
+                from revizor_frank.core import cv_optimizer as _cvo
+                _li, _in, _out = _cvo.generate_linkedin(
+                    st.session_state.ai_cv_general,
+                    st.session_state.ai_cv_general,
+                    st.session_state.get("job_description", ""),
+                )
+                st.session_state.linkedin_data = _li
+                st.session_state.total_input_tokens = (
+                    st.session_state.get("total_input_tokens", 0) + _in
+                )
+                st.session_state.total_output_tokens = (
+                    st.session_state.get("total_output_tokens", 0) + _out
+                )
+            except Exception as _e:
+                st.warning(f"Could not refresh LinkedIn: {_e}")
+        st.session_state.linkedin_stale = False
+
     li = st.session_state.linkedin_data
     if not li:
         st.info("LinkedIn profile will appear here after processing.")
@@ -3136,6 +3195,7 @@ def _render_edit_cv_tab(include_linkedin: bool):
                         st.session_state.job_description,
                     )
                     st.session_state.linkedin_data = linkedin
+                    st.session_state.linkedin_stale = False
                     st.session_state.total_input_tokens = (
                         st.session_state.get("total_input_tokens", 0) + in_tok
                     )
