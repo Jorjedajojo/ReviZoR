@@ -579,26 +579,39 @@ def _extract_contact(header_text: str) -> dict:
             name_idx = _pi  # record position so title search starts from next line
         break  # only check the very first viable line
 
-    # General fallback: longest suitable line (when priority pass found nothing)
+    # General fallback: first suitable non-title-looking line (when priority pass found nothing)
+    _TITLE_KW_RE = re.compile(
+        r"\b(manager|director|engineer|specialist|developer|consultant|analyst|"
+        r"officer|coordinator|executive|administrator|lead|senior|junior|"
+        r"head\s+of|chief|vp|ceo|cto|cfo|coo|president|founder)\b",
+        re.I,
+    )
     if not name:
-        for line in lines[:5]:
+        for _gi, line in enumerate(lines[:5]):
             if not line:
                 continue
             if any(tok in line for tok in contact_tokens if tok):
                 continue
             if _EMAIL_RE.search(line) or _PHONE_RE.search(line):
                 continue
-            # Skip DOB lines
             if _DOB_RE.search(line):
                 continue
             lower = line.lower()
             if any(lower.startswith(prefix) for prefix in _SKIP_PREFIXES):
                 continue
-            # Skip all-uppercase lines with 5+ words — these are headings not names
+            # Skip all-uppercase lines with 5+ words — section headings
             if line.isupper() and len(line.split()) >= 5:
                 continue
-            if len(line) > len(name):
-                name = line
+            # Reject if looks like a job title: title keyword, colon-value, or >5 words
+            if _TITLE_KW_RE.search(line):
+                continue
+            if re.search(r":\s*\S", line):
+                continue
+            if len(line.split()) > 5:
+                continue
+            name = line
+            name_idx = _gi
+            break
 
     # Title: professional title on the line immediately below the candidate name,
     # before the contact block. Fallback: first non-empty, non-contact line after name.
@@ -739,17 +752,43 @@ def _parse_education(text: str) -> list[dict]:
         return []
 
     _DEGREE_KW_RE = re.compile(
-        r"\b(bachelor|master|phd|mba|bsc|msc|diploma|ba|ma|md|jd)\b", re.I
+        r"\b(bachelor|master|doctor|phd|ph\.d|mba|bba|b\.?s\.?c?|m\.?s\.?c?|"
+        r"b\.?a\.?|m\.?a\.?|b\.?eng|m\.?eng|b\.?fa|m\.?fa|md|m\.?d|jd|j\.?d|"
+        r"llb|llm|edd|psyd|dds|dvm|diploma|degree|associate)\b",
+        re.I,
     )
+    _INST_KW_RE = re.compile(r"\b(university|college|institute|school)\b", re.I)
     _EDU_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
 
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     buckets: list[list[str]] = []
-    for line in lines:
-        if _DEGREE_KW_RE.search(line) or _EDU_YEAR_RE.search(line):
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if _DEGREE_KW_RE.search(line):
+            # Degree keyword always starts a new entry bucket
             buckets.append([line])
+        elif _INST_KW_RE.search(line):
+            # Institution keyword starts a new bucket only when no active bucket exists
+            # (handles "Cairo University\n2015" with no preceding degree line)
+            has_year = bool(_EDU_YEAR_RE.search(line))
+            next_has_year = (i + 1 < len(lines) and bool(_EDU_YEAR_RE.search(lines[i + 1])))
+            if not buckets and (has_year or next_has_year):
+                buckets.append([line])
+                if next_has_year and not has_year:
+                    i += 1
+                    buckets[-1].append(lines[i])
+            elif buckets:
+                buckets[-1].append(line)
+        elif _EDU_YEAR_RE.search(line):
+            # Year lines are appended to current bucket, or start one if none exists
+            if buckets:
+                buckets[-1].append(line)
+            else:
+                buckets.append([line])
         elif buckets:
             buckets[-1].append(line)
+        i += 1
 
     entries = []
     for bucket in buckets:
@@ -763,9 +802,23 @@ def _parse_education(text: str) -> list[dict]:
         year = years[-1] if years else ""
         degree = _EDU_YEAR_RE.sub("", degree).strip(" -|")
         institution = _EDU_YEAR_RE.sub("", institution).strip(" -|")
+        # If primary looks like an institution name (not a degree), move it
+        if _INST_KW_RE.search(degree) and not _DEGREE_KW_RE.search(degree):
+            if not institution:
+                institution = degree
+            degree = ""
+        # Extract year from extra lines if not found in primary
+        if not year:
+            for extra in bucket[1:]:
+                yr_found = _EDU_YEAR_RE.findall(extra)
+                if yr_found:
+                    year = yr_found[-1]
+                    break
         gpa = ""
         honors = ""
         for extra in bucket[1:]:
+            if re.match(r"^(?:19|20)\d{2}$", extra.strip()):
+                continue  # pure year line already captured
             if re.search(r"\bgpa\b", extra, re.I):
                 gpa = extra
             elif re.search(r"\b(honor|cum laude|distinction)\b", extra, re.I):
