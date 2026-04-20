@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-_DB_PATH = Path(__file__).parent.parent / "revizor_frank" / "storage" / "data" / "auth.db"
+_DB_PATH = Path(__file__).parent.parent / "revizor_frank" / "storage" / "data" / "revizor.db"
 _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 # ── Schema ────────────────────────────────────────────────────────────────────

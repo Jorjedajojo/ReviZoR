@@ -10,6 +10,7 @@ Auth modes:
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import hmac
 import io
@@ -3357,118 +3358,412 @@ def _cv_to_text(cv: dict) -> str:
             os.unlink(_path)
 
 
-def _render_edit_cv_tab(include_linkedin: bool):
-    st.markdown("### ✏️ Edit Your CV Text")
-    st.caption("Edit the optimized CV below. Click **Apply edits** to save changes"
-               + (" and regenerate your LinkedIn profile." if include_linkedin else "."))
+# ── Structured inline CV editor helpers ───────────────────────────────────────
 
-    cv_source = st.session_state.ai_cv_general or st.session_state.offline_cv
+def _get_editable_cv() -> dict:
+    """Return a deep copy of the working CV for the edit stage."""
+    return copy.deepcopy(
+        st.session_state.get("edited_cv") or
+        st.session_state.get("ai_cv_general") or
+        st.session_state.get("offline_cv") or {}
+    )
+
+
+def _persist_edited_cv(cv: dict) -> None:
+    """Write an updated CV dict into session state and mark LinkedIn stale."""
+    st.session_state.edited_cv = cv
+    st.session_state.linkedin_stale = True
+
+
+def _refresh_linkedin_after_edit() -> None:
+    """Regenerate LinkedIn from edited_cv when online. Silent on failure."""
+    if not (st.session_state.get("online") and st.session_state.get("ai_cv_general")):
+        return
+    try:
+        from revizor_frank.core import cv_optimizer
+        base_cv = st.session_state.get("edited_cv") or st.session_state.ai_cv_general
+        linkedin, in_tok, out_tok = cv_optimizer.generate_linkedin(
+            base_cv,
+            st.session_state.ai_cv_general,
+            st.session_state.get("job_description", ""),
+        )
+        st.session_state.linkedin_data = linkedin
+        st.session_state.linkedin_stale = False
+        st.session_state.total_input_tokens = (
+            st.session_state.get("total_input_tokens", 0) + in_tok
+        )
+        st.session_state.total_output_tokens = (
+            st.session_state.get("total_output_tokens", 0) + out_tok
+        )
+    except Exception as _e:
+        st.warning(f"LinkedIn refresh failed: {_e}")
+
+
+def _edit_section_personal(cv: dict, include_linkedin: bool) -> None:
+    col1, col2 = st.columns(2)
+    with col1:
+        name     = st.text_input("Full Name",       value=cv.get("name", ""),             key="ed_name")
+        title    = st.text_input("Job Title",        value=cv.get("title", ""),            key="ed_title")
+        email    = st.text_input("Email",            value=cv.get("email", ""),            key="ed_email")
+        phone    = st.text_input("Phone",            value=cv.get("phone", ""),            key="ed_phone")
+    with col2:
+        location = st.text_input("Location",         value=cv.get("location", ""),         key="ed_location")
+        linkedin = st.text_input("LinkedIn URL",     value=cv.get("linkedin", ""),         key="ed_linkedin_url")
+        github   = st.text_input("GitHub URL",       value=cv.get("github", ""),           key="ed_github")
+        website  = st.text_input("Website",          value=cv.get("website", ""),          key="ed_website")
+    col3, col4 = st.columns(2)
+    with col3:
+        dob      = st.text_input("Date of Birth",    value=cv.get("dob", ""),              key="ed_dob")
+        nation   = st.text_input("Nationality",      value=cv.get("nationality", ""),      key="ed_nationality")
+    with col4:
+        military = st.text_input("Military Status",  value=cv.get("military_status", ""), key="ed_military")
+        marital  = st.text_input("Marital Status",   value=cv.get("marital_status", ""),  key="ed_marital")
+
+    if st.button("💾 Save Personal Info", key="save_personal_ed", type="primary"):
+        updated = _get_editable_cv()
+        updated.update({
+            "name": name, "title": title, "email": email, "phone": phone,
+            "location": location, "linkedin": linkedin, "github": github,
+            "website": website, "dob": dob, "nationality": nation,
+            "military_status": military, "marital_status": marital,
+        })
+        _persist_edited_cv(updated)
+        st.success("Personal info saved.")
+        if include_linkedin:
+            with st.spinner("Refreshing LinkedIn…"):
+                _refresh_linkedin_after_edit()
+
+
+def _edit_section_summary(cv: dict, include_linkedin: bool) -> None:
+    summary = st.text_area(
+        "Professional Summary",
+        value=cv.get("summary", ""),
+        height=150,
+        key="ed_summary",
+        label_visibility="collapsed",
+    )
+    if st.button("💾 Save Summary", key="save_summary_ed", type="primary"):
+        updated = _get_editable_cv()
+        updated["summary"] = summary.strip()
+        _persist_edited_cv(updated)
+        st.success("Summary saved.")
+        if include_linkedin:
+            with st.spinner("Refreshing LinkedIn…"):
+                _refresh_linkedin_after_edit()
+
+
+def _edit_section_experience(cv: dict, idx: int) -> None:
+    exps = cv.get("experience") or []
+    if idx >= len(exps):
+        return
+    e    = exps[idx]
+    pfx  = f"ed_exp{idx}"
+
+    col1, col2 = st.columns(2)
+    with col1:
+        title    = st.text_input("Job Title",   value=e.get("title", ""),      key=f"{pfx}_title")
+        start    = st.text_input("Start Date",  value=e.get("start_date", ""), key=f"{pfx}_start")
+        location = st.text_input("Location",    value=e.get("location", ""),   key=f"{pfx}_loc")
+    with col2:
+        company  = st.text_input("Company",     value=e.get("company", ""),    key=f"{pfx}_co")
+        end      = st.text_input("End Date",    value=e.get("end_date", ""),   key=f"{pfx}_end")
+
+    st.caption("Bullet points — one per box:")
+    n_key   = f"{pfx}_nbullets"
+    bullets = e.get("bullets") or [""]
+    if n_key not in st.session_state:
+        st.session_state[n_key] = max(len(bullets), 1)
+    n = st.session_state[n_key]
+
+    new_bullets = []
+    for b in range(n):
+        default = bullets[b] if b < len(bullets) else ""
+        val = st.text_area(
+            f"Bullet {b + 1}", value=default, height=68,
+            key=f"{pfx}_b{b}", label_visibility="collapsed",
+        )
+        new_bullets.append(val)
+
+    ba, br, _ = st.columns([1, 1, 3])
+    with ba:
+        if st.button("+ Add bullet", key=f"{pfx}_addb"):
+            st.session_state[n_key] += 1
+            st.rerun()
+    with br:
+        if n > 1 and st.button("- Remove last", key=f"{pfx}_rmb"):
+            st.session_state[n_key] = max(1, n - 1)
+            st.rerun()
+
+    if st.button("💾 Save Experience", key=f"{pfx}_save", type="primary"):
+        updated     = _get_editable_cv()
+        new_entry   = copy.deepcopy(e)
+        new_entry.update({
+            "title": title, "company": company,
+            "start_date": start, "end_date": end, "location": location,
+            "bullets": [b.strip() for b in new_bullets if b.strip()],
+        })
+        exps_updated = list(updated.get("experience") or [])
+        if idx < len(exps_updated):
+            exps_updated[idx] = new_entry
+        updated["experience"] = exps_updated
+        _persist_edited_cv(updated)
+        st.success("Experience saved.")
+
+
+def _edit_section_education(cv: dict, idx: int) -> None:
+    edus = cv.get("education") or []
+    if idx >= len(edus):
+        return
+    e   = edus[idx]
+    pfx = f"ed_edu{idx}"
+
+    col1, col2 = st.columns(2)
+    with col1:
+        degree = st.text_input("Degree",      value=e.get("degree", ""),       key=f"{pfx}_deg")
+        year   = st.text_input("Year",        value=str(e.get("year", "")),    key=f"{pfx}_yr")
+        honors = st.text_input("Honors",      value=e.get("honors", ""),       key=f"{pfx}_hon")
+    with col2:
+        inst   = st.text_input("Institution", value=e.get("institution", ""),  key=f"{pfx}_inst")
+        gpa    = st.text_input("GPA",         value=str(e.get("gpa", "")),     key=f"{pfx}_gpa")
+
+    if st.button("💾 Save Education", key=f"{pfx}_save", type="primary"):
+        updated   = _get_editable_cv()
+        new_entry = copy.deepcopy(e)
+        new_entry.update({"degree": degree, "institution": inst, "year": year,
+                          "honors": honors, "gpa": gpa})
+        edus_updated = list(updated.get("education") or [])
+        if idx < len(edus_updated):
+            edus_updated[idx] = new_entry
+        updated["education"] = edus_updated
+        _persist_edited_cv(updated)
+        st.success("Education saved.")
+
+
+def _edit_section_skills(cv: dict) -> None:
+    cats  = (cv.get("skills") or {}).get("categories") or []
+    pfx   = "ed_skills"
+    n_key = f"{pfx}_ncats"
+    if n_key not in st.session_state:
+        st.session_state[n_key] = max(len(cats), 1)
+    n = st.session_state[n_key]
+
+    new_cats = []
+    for c in range(n):
+        cat = cats[c] if c < len(cats) else {}
+        col1, col2 = st.columns([1, 3])
+        with col1:
+            cat_name = st.text_input(
+                "Category", value=cat.get("name", ""), key=f"{pfx}_cat{c}_name"
+            )
+        with col2:
+            items_str = st.text_input(
+                "Skills (comma-separated)",
+                value=", ".join(str(i) for i in (cat.get("items") or [])),
+                key=f"{pfx}_cat{c}_items",
+            )
+        new_cats.append({
+            "name": cat_name,
+            "items": [x.strip() for x in items_str.split(",") if x.strip()],
+        })
+
+    ca, cr, _ = st.columns([1, 1, 3])
+    with ca:
+        if st.button("+ Category", key=f"{pfx}_addcat"):
+            st.session_state[n_key] += 1
+            st.rerun()
+    with cr:
+        if n > 1 and st.button("- Remove Last", key=f"{pfx}_rmcat"):
+            st.session_state[n_key] = max(1, n - 1)
+            st.rerun()
+
+    if st.button("💾 Save Skills", key=f"{pfx}_save", type="primary"):
+        updated = _get_editable_cv()
+        updated["skills"] = {"categories": [c for c in new_cats if c["name"]]}
+        _persist_edited_cv(updated)
+        st.success("Skills saved.")
+
+
+def _edit_section_certifications(cv: dict) -> None:
+    certs = cv.get("certifications") or []
+    pfx   = "ed_certs"
+    n_key = f"{pfx}_n"
+    if n_key not in st.session_state:
+        st.session_state[n_key] = max(len(certs), 1)
+    n = st.session_state[n_key]
+
+    new_certs = []
+    for c in range(n):
+        cert = certs[c] if c < len(certs) else {}
+        st.caption(f"Certification {c + 1}")
+        col1, col2 = st.columns(2)
+        with col1:
+            cname  = st.text_input("Name",          value=cert.get("name", ""),          key=f"{pfx}_{c}_name")
+            cdate  = st.text_input("Date",           value=cert.get("date", ""),          key=f"{pfx}_{c}_date")
+        with col2:
+            issuer = st.text_input("Issuer",         value=cert.get("issuer", ""),        key=f"{pfx}_{c}_issuer")
+            cid    = st.text_input("Credential ID",  value=cert.get("credential_id", ""), key=f"{pfx}_{c}_cid")
+        new_certs.append({"name": cname, "issuer": issuer, "date": cdate, "credential_id": cid})
+        st.divider()
+
+    ca, cr, _ = st.columns([1, 1, 3])
+    with ca:
+        if st.button("+ Add", key=f"{pfx}_add"):
+            st.session_state[n_key] += 1
+            st.rerun()
+    with cr:
+        if n > 1 and st.button("- Remove Last", key=f"{pfx}_rm"):
+            st.session_state[n_key] = max(1, n - 1)
+            st.rerun()
+
+    if st.button("💾 Save Certifications", key=f"{pfx}_save", type="primary"):
+        updated = _get_editable_cv()
+        updated["certifications"] = [c for c in new_certs if c.get("name")]
+        _persist_edited_cv(updated)
+        st.success("Certifications saved.")
+
+
+def _edit_section_languages(cv: dict) -> None:
+    langs = cv.get("languages") or []
+    pfx   = "ed_langs"
+    n_key = f"{pfx}_n"
+    if n_key not in st.session_state:
+        st.session_state[n_key] = max(len(langs), 1)
+    n = st.session_state[n_key]
+
+    new_langs = []
+    for i in range(n):
+        raw  = langs[i] if i < len(langs) else {}
+        lang = raw if isinstance(raw, dict) else {"language": raw}
+        col1, col2 = st.columns(2)
+        with col1:
+            lname = st.text_input("Language", value=lang.get("language", ""), key=f"{pfx}_{i}_lang")
+        with col2:
+            level = st.text_input("Level",    value=lang.get("level", ""),    key=f"{pfx}_{i}_level")
+        new_langs.append({"language": lname, "level": level})
+
+    la, lr, _ = st.columns([1, 1, 3])
+    with la:
+        if st.button("+ Add", key=f"{pfx}_add"):
+            st.session_state[n_key] += 1
+            st.rerun()
+    with lr:
+        if n > 1 and st.button("- Remove Last", key=f"{pfx}_rm"):
+            st.session_state[n_key] = max(1, n - 1)
+            st.rerun()
+
+    if st.button("💾 Save Languages", key=f"{pfx}_save", type="primary"):
+        updated = _get_editable_cv()
+        updated["languages"] = [l for l in new_langs if l.get("language")]
+        _persist_edited_cv(updated)
+        st.success("Languages saved.")
+
+
+def _edit_section_projects(cv: dict) -> None:
+    projs = cv.get("projects") or []
+    pfx   = "ed_projs"
+    n_key = f"{pfx}_n"
+    if n_key not in st.session_state:
+        st.session_state[n_key] = max(len(projs), 1)
+    n = st.session_state[n_key]
+
+    new_projs = []
+    for i in range(n):
+        proj = projs[i] if i < len(projs) else {}
+        st.caption(f"Project {i + 1}")
+        col1, col2 = st.columns(2)
+        with col1:
+            pname = st.text_input("Project Name", value=proj.get("name", ""), key=f"{pfx}_{i}_name")
+            url   = st.text_input("URL",           value=proj.get("url", ""),  key=f"{pfx}_{i}_url")
+        with col2:
+            tech  = st.text_input(
+                "Technologies (comma-separated)",
+                value=", ".join(proj.get("technologies") or []),
+                key=f"{pfx}_{i}_tech",
+            )
+        desc = st.text_area(
+            "Description", value=proj.get("description", ""),
+            height=80, key=f"{pfx}_{i}_desc",
+        )
+        new_projs.append({
+            "name": pname, "description": desc, "url": url,
+            "technologies": [x.strip() for x in tech.split(",") if x.strip()],
+        })
+        st.divider()
+
+    pa, pr, _ = st.columns([1, 1, 3])
+    with pa:
+        if st.button("+ Add Project", key=f"{pfx}_add"):
+            st.session_state[n_key] += 1
+            st.rerun()
+    with pr:
+        if n > 1 and st.button("- Remove Last", key=f"{pfx}_rm"):
+            st.session_state[n_key] = max(1, n - 1)
+            st.rerun()
+
+    if st.button("💾 Save Projects", key=f"{pfx}_save", type="primary"):
+        updated = _get_editable_cv()
+        updated["projects"] = [p for p in new_projs if p.get("name")]
+        _persist_edited_cv(updated)
+        st.success("Projects saved.")
+
+
+def _render_edit_cv_tab(include_linkedin: bool) -> None:
+    """Structured inline CV editor — edits write directly into CVData, no text round-trip."""
+    cv_source = (
+        st.session_state.get("edited_cv") or
+        st.session_state.get("ai_cv_general") or
+        st.session_state.get("offline_cv")
+    )
     if not cv_source:
         st.warning("No CV available to edit yet.")
         return
 
-    # Passive DOB note — only show when DOB was not extracted from the CV
-    if not cv_source.get("dob") and not st.session_state.get("dob"):
-        st.info(
-            "ℹ️ Date of birth not found in your CV. "
-            "Add it manually in the text below if needed, e.g. "
-            "**Date of Birth: 1 January 1990**"
-        )
-
-    # Initialize edit buffer from CV if not already set
-    if not st.session_state.get("edited_cv_text"):
-        st.session_state.edited_cv_text = _cv_to_text(cv_source)
-
-    btn_label = "✅ Apply edits & refresh LinkedIn" if include_linkedin else "✅ Apply edits"
-
-    def _do_apply_edits(edited_text: str) -> None:
-        """Shared handler for both top and bottom Apply Edits buttons."""
-        st.session_state.edited_cv_text = edited_text
-
-        _edit_ok = False
-        try:
-            import copy
-            _base = st.session_state.get("ai_cv_general") or st.session_state.get("offline_cv") or {}
-            merged = copy.deepcopy(_base)
-
-            _summary_lines: list[str] = []
-            _heading_re = re.compile(
-                r"^\s*(SUMMARY|PROFILE|OBJECTIVE|EXPERIENCE|EDUCATION|SKILLS|"
-                r"CERTIFICATIONS?|TRAINING|LANGUAGES?|PROJECTS?|PUBLICATIONS?|"
-                r"AWARDS?|VOLUNTEER|PROFESSIONAL\s+SUMMARY|PROFESSIONAL\s+TRAINING)\s*$",
-                re.I,
-            )
-            _collecting = False
-            for _line in edited_text.splitlines():
-                if not _line.strip():
-                    if _collecting:
-                        break
-                    continue
-                if _heading_re.match(_line):
-                    if _collecting:
-                        break
-                    break
-                _collecting = True
-                _summary_lines.append(_line.strip())
-
-            _extracted_summary = " ".join(_summary_lines).strip()
-            if _extracted_summary:
-                merged["summary"] = _extracted_summary
-
-            for _field in ("title", "dob", "linkedin", "website", "phones", "phone", "email", "raw_text"):
-                if not merged.get(_field) and _base.get(_field):
-                    merged[_field] = _base[_field]
-
-            st.session_state.edited_cv = merged
-            _edit_ok = True
-        except Exception as _merge_err:
-            st.session_state.edited_cv = None
-            st.error(f"Could not save edits: {_merge_err}.")
-
-        if _edit_ok and include_linkedin and st.session_state.online and st.session_state.ai_cv_general:
-            with st.spinner("Regenerating LinkedIn profile from edited CV…"):
-                try:
-                    from revizor_frank.core import cv_optimizer
-                    base_cv = st.session_state.get("edited_cv") or st.session_state.ai_cv_general
-                    linkedin, in_tok, out_tok = cv_optimizer.generate_linkedin(
-                        base_cv,
-                        st.session_state.ai_cv_general,
-                        st.session_state.job_description,
-                    )
-                    st.session_state.linkedin_data = linkedin
-                    st.session_state.linkedin_stale = False
-                    st.session_state.total_input_tokens = (
-                        st.session_state.get("total_input_tokens", 0) + in_tok
-                    )
-                    st.session_state.total_output_tokens = (
-                        st.session_state.get("total_output_tokens", 0) + out_tok
-                    )
-                    st.success("Edits saved — LinkedIn profile refreshed.")
-                except Exception as e:
-                    st.error(f"Could not regenerate LinkedIn: {e}")
-        elif _edit_ok and include_linkedin and not st.session_state.online:
-            st.success("Edits saved — downloads will use your edited CV.")
-            st.info("LinkedIn refresh requires internet connection.")
-        elif _edit_ok:
-            st.success("Edits saved — downloads will use your edited CV.")
-
-    # ── Top Apply Edits button (reads current text area value from session state)
-    if st.button(btn_label, type="primary", key="apply_edits_top"):
-        _current = st.session_state.get("cv_text_editor",
-                                        st.session_state.get("edited_cv_text", ""))
-        _do_apply_edits(_current)
-
-    edited = st.text_area(
-        "CV Text",
-        value=st.session_state.edited_cv_text,
-        height=500,
-        key="cv_text_editor",
-        label_visibility="collapsed",
+    st.caption(
+        "Each section saves independently. "
+        "Changes write directly into the CV — no text parsing, no data loss."
     )
 
-    # ── Bottom Apply Edits button (convenience repeat)
-    if st.button(btn_label, type="primary", key="apply_edits_bottom"):
-        _do_apply_edits(edited)
+    if st.session_state.get("edited_cv"):
+        st.info("You have unsaved-to-download edits active. Downloads already use your edited version.")
+
+    with st.expander("👤 Personal Information", expanded=False):
+        _edit_section_personal(cv_source, include_linkedin)
+
+    with st.expander("📝 Professional Summary", expanded=False):
+        _edit_section_summary(cv_source, include_linkedin)
+
+    for _i, _exp in enumerate(cv_source.get("experience") or []):
+        _label = f"💼 {_exp.get('title', 'Role')} @ {_exp.get('company', 'Company')}"
+        with st.expander(_label, expanded=False):
+            _edit_section_experience(cv_source, _i)
+
+    for _i, _edu in enumerate(cv_source.get("education") or []):
+        _label = f"🎓 {_edu.get('degree', 'Degree')} — {_edu.get('institution', 'Institution')}"
+        with st.expander(_label, expanded=False):
+            _edit_section_education(cv_source, _i)
+
+    if cv_source.get("skills"):
+        with st.expander("🛠️ Skills", expanded=False):
+            _edit_section_skills(cv_source)
+
+    if cv_source.get("certifications"):
+        with st.expander("🏆 Certifications", expanded=False):
+            _edit_section_certifications(cv_source)
+
+    if cv_source.get("languages"):
+        with st.expander("🌐 Languages", expanded=False):
+            _edit_section_languages(cv_source)
+
+    if cv_source.get("projects"):
+        with st.expander("🚀 Projects", expanded=False):
+            _edit_section_projects(cv_source)
+
+    st.divider()
+    if st.session_state.get("edited_cv"):
+        if st.button("↩️ Reset all edits to AI version", key="reset_edits_btn"):
+            st.session_state.edited_cv = None
+            st.session_state.linkedin_stale = True
+            st.rerun()
 
 
 _TC_TEXT = """SERVICE TERMS — ReviZoR CV Revision Service
@@ -4266,6 +4561,21 @@ def render_edit():
     _render_bottom_nav("template", "Template", "download", "Download")
 
 
+# ── Template validation ────────────────────────────────────────────────────────
+
+@st.cache_data(show_spinner=False)
+def _validate_templates() -> list[str]:
+    """Return template keys that fail to instantiate. Cached once per process."""
+    from revizor_frank.templates import get_template
+    failed = []
+    for key in TEMPLATES:
+        try:
+            get_template(key)
+        except Exception:
+            failed.append(key)
+    return failed
+
+
 # ── Main router ───────────────────────────────────────────────────────────────
 
 def main():
@@ -4313,6 +4623,10 @@ def main():
     _raw_stage = st.session_state.get("stage", "upload")
     if _raw_stage in _STAGE_MIGRATION:
         st.session_state.stage = _STAGE_MIGRATION[_raw_stage]
+
+    _bad_tpls = _validate_templates()
+    if _bad_tpls:
+        st.warning(f"Some templates failed to load and are unavailable: {', '.join(_bad_tpls)}")
 
     render_sidebar()
     stage = st.session_state.stage

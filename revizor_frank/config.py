@@ -23,7 +23,7 @@ APP_TAGLINE = "AI-Powered CV Optimization Engine"
 # ── Claude API ────────────────────────────────────────────────────────────────
 ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
 # Use the most capable model for best CV output quality
-CLAUDE_MODEL = "claude-opus-4-6"
+CLAUDE_MODEL = "claude-opus-4-7"
 MAX_TOKENS = 8192
 # Fallback to Sonnet for faster/cheaper secondary calls
 CLAUDE_FAST_MODEL = "claude-sonnet-4-6"
