@@ -1449,10 +1449,9 @@ def _diff_html(old: str, new: str) -> str:
     parts = []
     _ADD = 'background:#d4edda;color:#155724;border-radius:3px;padding:0 3px'
     _DEL = 'background:#f8d7da;color:#721c24;text-decoration:line-through;border-radius:3px;padding:0 3px'
-    _EQ  = 'color:#111111'
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == "equal":
-            parts.append(f'<span style="{_EQ}">{" ".join(old_words[i1:i2])}</span>')
+            parts.append(" ".join(old_words[i1:i2]))
         elif tag == "insert":
             parts.append(f'<span style="{_ADD}">{" ".join(new_words[j1:j2])}</span>')
         elif tag == "delete":
@@ -2193,9 +2192,9 @@ def render_review_changes():
                 with col_orig:
                     st.caption("**Original**")
                     st.markdown(
-                        f'<div style="background:#ffffff;border:1px solid #e9ecef;'
+                        f'<div style="background:#fff8f8;border:1px solid #e9ecef;'
                         f'border-radius:6px;padding:0.75rem;font-size:0.85rem;'
-                        f'color:#111111;white-space:pre-wrap;min-height:80px">'
+                        f'white-space:pre-wrap;min-height:80px">'
                         f'{dec["original"] or "<em>(empty)</em>"}</div>',
                         unsafe_allow_html=True,
                     )
@@ -2257,9 +2256,9 @@ def render_review_changes():
                 with c_orig:
                     st.caption("**Original**")
                     st.markdown(
-                        f'<div style="background:#ffffff;border:1px solid #e9ecef;'
+                        f'<div style="background:#fff8f8;border:1px solid #e9ecef;'
                         f'border-radius:6px;padding:0.75rem;font-size:0.85rem;'
-                        f'color:#111111;white-space:pre-wrap;min-height:60px">'
+                        f'white-space:pre-wrap;min-height:60px">'
                         f'{dec["original"] or "<em>(empty)</em>"}</div>',
                         unsafe_allow_html=True,
                     )
@@ -2267,9 +2266,9 @@ def render_review_changes():
                     st.caption("**AI Revised**")
                     diff = _diff_html(dec["original"], dec.get("text", dec["revised"]))
                     st.markdown(
-                        f'<div style="background:#ffffff;border:1px solid #e9ecef;'
+                        f'<div style="background:#f8fff8;border:1px solid #e9ecef;'
                         f'border-radius:6px;padding:0.75rem;font-size:0.85rem;'
-                        f'color:#111111;white-space:pre-wrap;min-height:60px">'
+                        f'white-space:pre-wrap;min-height:60px">'
                         f'{diff or "<em>(empty)</em>"}</div>',
                         unsafe_allow_html=True,
                     )
@@ -2892,13 +2891,8 @@ def render_full_preview():
             # raw_text absent, too short, or cid-garbage — build from structured fields
             orig_text = _cv_to_plain_text(original_cv)
         if orig_text:
-            st.markdown(
-                f'<div style="background:#ffffff;border:1px solid #dee2e6;border-radius:6px;'
-                f'padding:1rem;color:#111111;font-family:monospace;font-size:0.82rem;'
-                f'white-space:pre-wrap;max-height:800px;overflow-y:auto;line-height:1.5">'
-                f'{orig_text}</div>',
-                unsafe_allow_html=True,
-            )
+            st.text_area("", value=orig_text, height=800, disabled=True,
+                         label_visibility="collapsed", key="preview_orig")
         else:
             st.info("Original text not available.")
 
@@ -2920,13 +2914,8 @@ def render_full_preview():
                 if os.path.exists(_tmp):
                     os.remove(_tmp)
         if revised_text:
-            st.markdown(
-                f'<div style="background:#ffffff;border:1px solid #dee2e6;border-radius:6px;'
-                f'padding:1rem;color:#111111;font-family:monospace;font-size:0.82rem;'
-                f'white-space:pre-wrap;max-height:800px;overflow-y:auto;line-height:1.5">'
-                f'{revised_text}</div>',
-                unsafe_allow_html=True,
-            )
+            st.text_area("", value=revised_text, height=800, disabled=True,
+                         label_visibility="collapsed", key="preview_rev")
         else:
             st.info("Revised CV not yet available.")
 
@@ -3089,19 +3078,12 @@ def render_results():
         _orig_text  = _parsed_cv.get("raw_text") or _cv_to_plain_text(_parsed_cv)
         _rev_text   = _cv_to_text(_revised_cv) if _revised_cv else ""
         _oc, _rc = st.columns(2)
-        _panel = (
-            'background:#ffffff;border:1px solid #dee2e6;border-radius:6px;'
-            'padding:1rem;color:#111111;font-family:monospace;font-size:0.82rem;'
-            'white-space:pre-wrap;max-height:400px;overflow-y:auto;line-height:1.5'
-        )
         with _oc:
-            st.caption("**Original CV**")
-            st.markdown(f'<div style="{_panel}">{_orig_text or "(empty)"}</div>',
-                        unsafe_allow_html=True)
+            st.text_area("Original CV", value=_orig_text, height=400, disabled=True,
+                         key="cmp_original")
         with _rc:
-            st.caption("**Revised CV**")
-            st.markdown(f'<div style="{_panel}">{_rev_text or "(empty)"}</div>',
-                        unsafe_allow_html=True)
+            st.text_area("Revised CV", value=_rev_text, height=400, disabled=True,
+                         key="cmp_revised")
 
     tier = st.session_state.get("service_tier", "cv_linkedin")
     include_linkedin = (tier != "cv_only")
