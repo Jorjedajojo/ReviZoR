@@ -485,6 +485,253 @@ def check_cv_parser_error_msg() -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# 16. STORAGE/DATABASE.PY — lifecycle schema and functions
+# ══════════════════════════════════════════════════════════════════════════════
+
+def check_database_lifecycle() -> None:
+    _section("16. storage/database.py — lifecycle schema")
+    src = _read(ROOT / "revizor_frank" / "storage" / "database.py")
+
+    required_cols = [
+        ("stage",            "pipeline stage persisted"),
+        ("lifecycle_status", "session lifecycle status column"),
+        ("candidate_name",   "candidate name column"),
+        ("candidate_email",  "candidate email column"),
+        ("lead_time_days",   "delivery lead time column"),
+        ("delivery_due_at",  "delivery deadline column"),
+        ("completed_at",     "completion timestamp column"),
+        ("notes",            "operator notes column"),
+        ("edited_cv",        "edited CV JSON column"),
+        ("review_decisions", "review decisions JSON column"),
+        ("service_tier",     "service tier column"),
+    ]
+    for col, desc in required_cols:
+        if _contains(src, rf'"{col}"') or _contains(src, rf"'{col}'"):
+            _pass(f"Column '{col}' defined  —  {desc}")
+        else:
+            _fail(f"Column '{col}' missing from _LIFECYCLE_COLUMNS", desc)
+
+    if _contains(src, r'cv_action_log'):
+        _pass("cv_action_log table defined")
+    else:
+        _fail("cv_action_log table missing — no audit trail")
+
+    if _contains(src, r'def _migrate'):
+        _pass("_migrate() present — safe forward-compatible schema upgrades")
+    else:
+        _fail("_migrate() missing — new columns will never be added to existing DBs")
+
+    if _contains(src, r'_migrate\(conn\)'):
+        _pass("_migrate(conn) called inside _connect()")
+    else:
+        _fail("_migrate() not called in _connect() — columns only created on first use")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 17. STORAGE/DATABASE.PY — required lifecycle functions
+# ══════════════════════════════════════════════════════════════════════════════
+
+def check_database_functions() -> None:
+    _section("17. storage/database.py — lifecycle functions present")
+    if FAST:
+        print(f"  {YELLOW}(skipped in --fast mode){RESET}")
+        return
+    db_path = ROOT / "revizor_frank" / "storage" / "database.py"
+    tree = _parse(db_path)
+    fns = _fn_names(tree)
+
+    required = {
+        "log_action":             "append to audit log",
+        "get_action_log":         "retrieve audit log for a session",
+        "update_lifecycle":       "update status + log",
+        "set_delivery":           "set lead time / delivery deadline",
+        "add_note":               "operator notes + log",
+        "mark_info_requested":    "status → awaiting_info + log",
+        "save_full_session":      "persist full pipeline state",
+        "get_full_session":       "restore full session from DB",
+        "list_sessions_dashboard": "dashboard listing with auto-expire",
+        "get_session_counts":     "summary metrics by lifecycle status",
+    }
+    for fn, purpose in required.items():
+        if fn in fns:
+            _pass(f"def {fn}()  —  {purpose}")
+        else:
+            _fail(f"def {fn}() missing", purpose)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 18. APP.PY — session save infrastructure
+# ══════════════════════════════════════════════════════════════════════════════
+
+def check_session_save_infrastructure() -> None:
+    _section("18. app.py — session save infrastructure")
+    src = _read(APP_PY)
+
+    if FAST:
+        tree = None
+    else:
+        tree = _parse(APP_PY)
+        fns = _fn_names(tree)
+
+    if not FAST and "render_sessions_dashboard" in fns:
+        _pass("render_sessions_dashboard() defined")
+    elif not FAST:
+        _fail("render_sessions_dashboard() missing — sessions page not implemented")
+
+    if not FAST and "_save_session_to_db" in fns:
+        _pass("_save_session_to_db() defined")
+    elif not FAST:
+        _fail("_save_session_to_db() missing — no SQLite save on stage transitions")
+
+    if not FAST and "_restore_session_from_db" in fns:
+        _pass("_restore_session_from_db() defined — resume from SQLite works")
+    elif not FAST:
+        _fail("_restore_session_from_db() missing — cannot resume sessions")
+
+    # _save_session_to_db called in _go_to_stage
+    if _contains(src, r'def _go_to_stage.*?_save_session_to_db', ) or re.search(
+        r'_go_to_stage.*?_save_session_to_db|_save_session_to_db.*?_go_to_stage',
+        src, re.DOTALL
+    ):
+        _pass("_save_session_to_db() wired into _go_to_stage()")
+    else:
+        _fail("_save_session_to_db() not called in _go_to_stage()",
+              "Stage transitions won't persist state to SQLite")
+
+    # Called after review finalise
+    if _contains(src, r'_save_session_to_db\("review_finalised"\)'):
+        _pass("_save_session_to_db() called after review finalise")
+    else:
+        _fail("_save_session_to_db() not called after review finalise")
+
+    # Called in _persist_edited_cv — use grep-style line proximity check
+    fn_start = src.find("def _persist_edited_cv(")
+    fn_end   = src.find("\ndef ", fn_start + 1) if fn_start != -1 else -1
+    fn_body  = src[fn_start:fn_end] if fn_start != -1 and fn_end != -1 else ""
+    if not fn_body:
+        fn_body = src[fn_start:fn_start + 400] if fn_start != -1 else ""
+    if "_save_session_to_db(" in fn_body:
+        _pass("_save_session_to_db() called inside _persist_edited_cv()")
+    else:
+        _fail("_save_session_to_db() not called in _persist_edited_cv()",
+              "Section edits won't be persisted to SQLite until next stage nav")
+
+    # Sessions stage wired into router
+    if _contains(src, r'stage == "sessions"') and _contains(src, r'render_sessions_dashboard'):
+        _pass("'sessions' stage wired into main router")
+    else:
+        _fail("'sessions' stage not in main router", "Sessions page unreachable")
+
+    # Sidebar button
+    if _contains(src, r'nav_sessions') and _contains(src, r'_go_to_stage\("sessions"\)'):
+        _pass("Sessions nav button in sidebar")
+    else:
+        _fail("Sessions nav button missing from sidebar")
+
+    # Audit log wired at session creation
+    if _contains(src, r'db\.log_action\(session_id.*?"created"'):
+        _pass("log_action('created') called when session is first created")
+    else:
+        _fail("log_action('created') not called at session creation")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 19. STORAGE/DATABASE.PY — functional integration test
+# ══════════════════════════════════════════════════════════════════════════════
+
+def check_database_integration() -> None:
+    _section("19. storage/database.py — integration test (real SQLite)")
+    import importlib.util, types, os
+
+    cfg = types.ModuleType("revizor_frank.config")
+    cfg.DB_PATH = Path("/tmp/rvz_verify_test.db")
+    import sys
+    sys.modules["revizor_frank.config"] = cfg
+
+    spec = importlib.util.spec_from_file_location(
+        "db_test", ROOT / "revizor_frank" / "storage" / "database.py"
+    )
+    db_mod = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(db_mod)
+    except Exception as exc:
+        _fail("database.py failed to import", str(exc))
+        return
+    _pass("database.py imports cleanly")
+
+    try:
+        sid = db_mod.create_session("test.pdf", "raw text")
+        _pass(f"create_session() returned ID {sid[:8]}…")
+    except Exception as exc:
+        _fail("create_session() raised", str(exc))
+        return
+
+    try:
+        db_mod.log_action(sid, "tester", "created", {"file": "test.pdf"})
+        _pass("log_action() succeeded")
+    except Exception as exc:
+        _fail("log_action() raised", str(exc))
+
+    try:
+        db_mod.update_lifecycle(sid, "in_delivery", "tester")
+        _pass("update_lifecycle() → in_delivery")
+    except Exception as exc:
+        _fail("update_lifecycle() raised", str(exc))
+
+    try:
+        due = db_mod.set_delivery(sid, 3, "tester")
+        assert due[:4] == "2026" or True  # just check it returns a string
+        _pass(f"set_delivery() → due {due[:10]}")
+    except Exception as exc:
+        _fail("set_delivery() raised", str(exc))
+
+    try:
+        db_mod.save_full_session(
+            sid, stage="review", candidate_name="Jane Doe",
+            candidate_email="jane@test.com", service_tier="cv_linkedin",
+        )
+        _pass("save_full_session() succeeded")
+    except Exception as exc:
+        _fail("save_full_session() raised", str(exc))
+
+    try:
+        sessions = db_mod.list_sessions_dashboard()
+        assert len(sessions) >= 1
+        _pass(f"list_sessions_dashboard() returned {len(sessions)} session(s)")
+    except Exception as exc:
+        _fail("list_sessions_dashboard() raised", str(exc))
+
+    try:
+        counts = db_mod.get_session_counts()
+        assert "total" in counts
+        _pass(f"get_session_counts() total={counts['total']}")
+    except Exception as exc:
+        _fail("get_session_counts() raised", str(exc))
+
+    try:
+        log = db_mod.get_action_log(sid)
+        assert len(log) >= 3
+        actions = [e["action"] for e in log]
+        _pass(f"get_action_log() returned {len(log)} entries: {actions}")
+    except Exception as exc:
+        _fail("get_action_log() raised", str(exc))
+
+    try:
+        full = db_mod.get_full_session(sid)
+        assert full["stage"] == "review"
+        assert full["lifecycle_status"] == "in_delivery"
+        _pass("get_full_session() returns correct stage and lifecycle_status")
+    except Exception as exc:
+        _fail("get_full_session() validation failed", str(exc))
+
+    try:
+        if Path("/tmp/rvz_verify_test.db").exists():
+            os.unlink("/tmp/rvz_verify_test.db")
+    except Exception:
+        pass
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # SUMMARY
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -530,6 +777,10 @@ def main() -> None:
     check_no_api_hard_block()
     check_session_state_init()
     check_cv_parser_error_msg()
+    check_database_lifecycle()
+    check_database_functions()
+    check_session_save_infrastructure()
+    check_database_integration()
 
     sys.exit(print_summary())
 

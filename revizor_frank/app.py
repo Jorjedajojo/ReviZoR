@@ -485,20 +485,71 @@ def _autosave_session() -> None:
         pass
 
 
+def _save_session_to_db(action: str = "stage_saved", *, log: bool = True) -> None:
+    """Persist full pipeline state to SQLite and optionally log the action.
+
+    Always uses the local SQLite DB (works offline).  Silent fail — never
+    raises so it is safe to call from any stage transition.
+    """
+    session_id = st.session_state.get("session_id")
+    if not session_id:
+        return
+    try:
+        actor = (
+            st.session_state.get("simple_auth_user") or
+            (st.session_state.get("auth_user") or {}).get("username", "system")
+        ) or "system"
+
+        # Derive candidate name/email from the most-enriched available CV
+        _cv = (
+            st.session_state.get("edited_cv") or
+            st.session_state.get("ai_cv_general") or
+            st.session_state.get("offline_cv") or
+            st.session_state.get("parsed_cv") or {}
+        )
+
+        db.save_full_session(
+            session_id,
+            stage=st.session_state.get("stage"),
+            candidate_name=(_cv.get("name") or st.session_state.get("filename") or ""),
+            candidate_email=_cv.get("email"),
+            parsed_data=st.session_state.get("parsed_cv"),
+            offline_cv=st.session_state.get("offline_cv"),
+            ai_cv_general=st.session_state.get("ai_cv_general"),
+            ai_cv_jd=st.session_state.get("ai_cv_jd"),
+            ats_report=st.session_state.get("ats_report"),
+            linkedin_data=st.session_state.get("linkedin_data"),
+            edited_cv=st.session_state.get("edited_cv"),
+            review_decisions=st.session_state.get("review_decisions"),
+            job_description=st.session_state.get("job_description"),
+            template=st.session_state.get("selected_template"),
+            service_tier=st.session_state.get("service_tier"),
+            actor=actor,
+        )
+        if log:
+            db.log_action(session_id, actor, action, {
+                "stage": st.session_state.get("stage"),
+                "has_edits": bool(st.session_state.get("edited_cv")),
+                "has_review": bool(st.session_state.get("review_decisions")),
+            })
+    except Exception:
+        pass  # never surface a save error to the user
+
+
 # ── Stage navigation ─────────────────────────────────────────────────────────
 
 def _go_to_stage(stage: str):
-    """Navigate to a stage, push browser history, and auto-save session."""
+    """Navigate to a stage, push browser history, and save session to SQLite."""
     st.session_state.stage = stage
     st.query_params["stage"] = stage
+    _save_session_to_db("stage_advanced")
+    # Also attempt Supabase save if configured
     username = (st.session_state.get("simple_auth_user") or
                 (st.session_state.get("auth_user") or {}).get("username", ""))
     if username:
         try:
             from revizor_frank.storage import supabase_db as _sdb
-            _saved = _sdb.save_session(username, dict(st.session_state))
-            if _saved:
-                st.toast("Progress saved", icon="✅")
+            _sdb.save_session(username, dict(st.session_state))
         except Exception:
             pass
     st.rerun()
@@ -730,6 +781,11 @@ def render_sidebar():
         if st.button(_queue_label, key="nav_queue", use_container_width=True,
                      type="primary" if _stage == "queue" else "secondary"):
             _go_to_stage("queue")
+
+        _sess_label = "📋" if _collapsed else "📋 Sessions"
+        if st.button(_sess_label, key="nav_sessions", use_container_width=True,
+                     type="primary" if _stage == "sessions" else "secondary"):
+            _go_to_stage("sessions")
 
         # ── CURRENT CV section ────────────────────────────────────────────────
         if not _collapsed:
@@ -1228,6 +1284,12 @@ def _run_pipeline():
         # 2. Create DB session
         session_id = db.create_session(filename, parsed.get("raw_text", ""))
         st.session_state.session_id = session_id
+        _actor = (st.session_state.get("simple_auth_user") or
+                  (st.session_state.get("auth_user") or {}).get("username", "system") or "system")
+        db.log_action(session_id, _actor, "created", {
+            "filename": filename,
+            "service_tier": st.session_state.get("service_tier"),
+        })
         db.update_session(session_id, parsed_data=parsed,
                           job_description=st.session_state.job_description,
                           template=st.session_state.selected_template)
@@ -2072,6 +2134,7 @@ def _apply_review_decisions() -> dict:
     st.session_state.edited_cv = None
     st.session_state.edited_cv_text = _cv_to_text(final)
     st.session_state.linkedin_stale = True
+    _save_session_to_db("review_finalised")
     try:
         st.toast("✅ Edits applied to CV and LinkedIn", icon="✅")
     except Exception:
@@ -3431,9 +3494,10 @@ def _get_editable_cv() -> dict:
 
 
 def _persist_edited_cv(cv: dict) -> None:
-    """Write an updated CV dict into session state and mark LinkedIn stale."""
+    """Write an updated CV dict into session state, mark LinkedIn stale, and save to DB."""
     st.session_state.edited_cv = cv
     st.session_state.linkedin_stale = True
+    _save_session_to_db("edits_saved", log=False)
 
 
 def _refresh_linkedin_after_edit() -> None:
@@ -3866,6 +3930,257 @@ _TC_TEXT = """SERVICE TERMS — ReviZoR CV Revision Service
 6. ACCEPTANCE
    By proceeding with the service, the Client implicitly agrees to these terms.
 """
+
+
+# ── Sessions dashboard ────────────────────────────────────────────────────────
+
+_LIFECYCLE_META: dict[str, tuple[str, str, str]] = {
+    # status: (icon, label, hex-colour)
+    "in_progress":   ("🔄", "In Progress",   "#0d6efd"),
+    "awaiting_info": ("📋", "Awaiting Info",  "#fd7e14"),
+    "in_delivery":   ("🚀", "In Delivery",    "#6f42c1"),
+    "expired":       ("⚠️", "Expired",        "#dc3545"),
+    "completed":     ("✅", "Completed",      "#198754"),
+}
+
+_STATUS_ORDER = ["in_progress", "awaiting_info", "in_delivery", "expired", "completed"]
+
+
+def _status_badge(status: str) -> str:
+    icon, label, colour = _LIFECYCLE_META.get(status, ("❓", status, "#6c757d"))
+    return (
+        f'<span style="background:{colour};color:#fff;border-radius:4px;'
+        f'padding:2px 8px;font-size:0.75rem;font-weight:700">{icon} {label}</span>'
+    )
+
+
+def _restore_session_from_db(session_id: str) -> bool:
+    """Load a saved session from SQLite back into st.session_state. Returns True on success."""
+    try:
+        saved = db.get_full_session(session_id)
+        if not saved:
+            return False
+        restorable = {
+            "parsed_cv":         "parsed_data",
+            "offline_cv":        "offline_cv",
+            "ai_cv_general":     "ai_cv_general",
+            "ai_cv_jd":          "ai_cv_jd",
+            "ats_report":        "ats_report",
+            "linkedin_data":     "linkedin_data",
+            "edited_cv":         "edited_cv",
+            "review_decisions":  "review_decisions",
+            "job_description":   "job_description",
+            "selected_template": "template",
+            "service_tier":      "service_tier",
+            "filename":          "filename",
+        }
+        for state_key, db_key in restorable.items():
+            val = saved.get(db_key)
+            if val is not None:
+                st.session_state[state_key] = val
+        st.session_state.session_id = session_id
+        if saved.get("parsed_data"):
+            st.session_state.session_already_parsed = True
+        st.session_state.session_restored_banner = True
+        # Map saved stage to current stage names
+        _STAGE_MAP = {
+            "select_service": "upload", "upload_certs": "upload",
+            "processing": "process", "review_changes": "review",
+            "full_preview": "template", "select_template": "template",
+            "results": "download",
+        }
+        raw_stage = saved.get("stage") or "upload"
+        st.session_state.stage = _STAGE_MAP.get(raw_stage, raw_stage)
+        actor = (st.session_state.get("simple_auth_user") or
+                 (st.session_state.get("auth_user") or {}).get("username", "system") or "system")
+        db.log_action(session_id, actor, "resumed", {"from_stage": raw_stage})
+        return True
+    except Exception:
+        return False
+
+
+def render_sessions_dashboard():
+    """Management page for all CV sessions with full lifecycle tracking."""
+    _render_top_nav()
+    st.markdown("# 📋 Sessions Dashboard")
+    st.caption("All CV sessions — track progress, manage delivery, log actions.")
+    st.divider()
+
+    actor = (st.session_state.get("simple_auth_user") or
+             (st.session_state.get("auth_user") or {}).get("username", "system") or "system")
+
+    # ── Summary strip ─────────────────────────────────────────────────────────
+    try:
+        counts = db.get_session_counts()
+        c_tot, c_ip, c_ai, c_id, c_ex, c_done = st.columns(6)
+        c_tot.metric("Total",        counts.get("total", 0))
+        c_ip.metric("In Progress",   counts.get("in_progress", 0))
+        c_ai.metric("Awaiting Info", counts.get("awaiting_info", 0))
+        c_id.metric("In Delivery",   counts.get("in_delivery", 0))
+        c_ex.metric("Expired",       counts.get("expired", 0))
+        c_done.metric("Completed",   counts.get("completed", 0))
+    except Exception:
+        pass
+
+    st.divider()
+
+    col_btn, _ = st.columns([1, 4])
+    with col_btn:
+        if st.button("➕ New CV", type="primary", key="sess_new_cv",
+                     use_container_width=True):
+            _start_over()
+
+    st.divider()
+
+    # ── Load sessions ─────────────────────────────────────────────────────────
+    try:
+        all_sessions = db.list_sessions_dashboard()
+    except Exception as _exc:
+        st.error(f"Could not load sessions: {_exc}")
+        return
+
+    if not all_sessions:
+        st.info("No CV sessions found. Upload a CV to get started.")
+        return
+
+    # ── Filter tabs ───────────────────────────────────────────────────────────
+    tab_labels = ["All", "In Progress", "Awaiting Info", "In Delivery", "Expired", "Completed"]
+    tab_keys   = [None, "in_progress", "awaiting_info", "in_delivery", "expired", "completed"]
+    tabs = st.tabs(tab_labels)
+
+    for tab, filter_key in zip(tabs, tab_keys):
+        with tab:
+            visible = (
+                all_sessions if filter_key is None
+                else [s for s in all_sessions if s.get("lifecycle_status") == filter_key]
+            )
+            if not visible:
+                st.info("No sessions in this category.")
+                continue
+
+            for s in visible:
+                _sid          = s["id"]
+                _name         = s.get("candidate_name") or s.get("filename") or "Untitled"
+                _file         = s.get("filename") or "—"
+                _status       = s.get("lifecycle_status", "in_progress")
+                _stage        = (s.get("stage") or "upload").replace("_", " ").title()
+                _updated      = (s.get("updated_at") or "")[:16].replace("T", " ")
+                _created      = (s.get("created_at") or "")[:10]
+                _due          = (s.get("delivery_due_at") or "")[:16].replace("T", " ")
+                _notes        = s.get("notes") or ""
+                _tier         = s.get("service_tier") or "—"
+                _icon, _lbl, _col = _LIFECYCLE_META.get(_status, ("❓", _status, "#6c757d"))
+                _exp_label    = f"{_icon}  {_name}  —  {_file}"
+
+                with st.expander(_exp_label, expanded=False):
+                    # ── Info row ──────────────────────────────────────────────
+                    st.markdown(
+                        _status_badge(_status),
+                        unsafe_allow_html=True,
+                    )
+                    i1, i2, i3, i4 = st.columns(4)
+                    i1.caption(f"**Stage:** {_stage}")
+                    i2.caption(f"**Created:** {_created}")
+                    i3.caption(f"**Updated:** {_updated}")
+                    i4.caption(f"**Due:** {_due or '—'}")
+                    if s.get("candidate_email"):
+                        st.caption(f"📧 {s['candidate_email']}  ·  Tier: {_tier}")
+                    if _notes:
+                        st.info(f"📝 {_notes}")
+
+                    st.divider()
+
+                    # ── Action buttons ────────────────────────────────────────
+                    btn_resume, btn_complete, btn_info, _ = st.columns([1, 1, 1, 2])
+
+                    with btn_resume:
+                        if st.button("▶ Resume", key=f"sess_resume_{_sid}",
+                                     use_container_width=True, type="primary"):
+                            if _restore_session_from_db(_sid):
+                                st.rerun()
+                            else:
+                                st.error("Could not load this session.")
+
+                    with btn_complete:
+                        if _status != "completed":
+                            if st.button("✅ Complete", key=f"sess_done_{_sid}",
+                                         use_container_width=True):
+                                db.update_lifecycle(_sid, "completed", actor)
+                                st.rerun()
+                        else:
+                            if st.button("↩ Reopen", key=f"sess_reopen_{_sid}",
+                                         use_container_width=True):
+                                db.update_lifecycle(_sid, "in_progress", actor,
+                                                    {"reason": "reopened"})
+                                st.rerun()
+
+                    with btn_info:
+                        if _status != "awaiting_info":
+                            if st.button("📋 Await Info", key=f"sess_await_{_sid}",
+                                         use_container_width=True):
+                                db.mark_info_requested(_sid, actor)
+                                st.rerun()
+
+                    # ── Status change ─────────────────────────────────────────
+                    with st.expander("⚙️ Change Status / Lead Time / Notes",
+                                     expanded=False):
+                        sc1, sc2 = st.columns(2)
+                        with sc1:
+                            new_status = st.selectbox(
+                                "Set status",
+                                _STATUS_ORDER,
+                                index=_STATUS_ORDER.index(_status),
+                                format_func=lambda x: _LIFECYCLE_META[x][1],
+                                key=f"sess_status_sel_{_sid}",
+                            )
+                            if st.button("Apply Status", key=f"sess_status_apply_{_sid}",
+                                         use_container_width=True):
+                                if new_status != _status:
+                                    db.update_lifecycle(_sid, new_status, actor)
+                                    st.rerun()
+
+                        with sc2:
+                            lead = st.number_input(
+                                "Lead time (days)",
+                                min_value=1, max_value=60,
+                                value=int(s.get("lead_time_days") or 3),
+                                key=f"sess_lead_{_sid}",
+                            )
+                            if st.button("Set Deadline", key=f"sess_lead_apply_{_sid}",
+                                         use_container_width=True):
+                                db.set_delivery(_sid, int(lead), actor)
+                                st.rerun()
+
+                        note_val = st.text_area(
+                            "Operator notes",
+                            value=_notes,
+                            height=80,
+                            key=f"sess_note_{_sid}",
+                        )
+                        if st.button("Save Note", key=f"sess_note_save_{_sid}",
+                                     use_container_width=True):
+                            db.add_note(_sid, note_val, actor)
+                            st.rerun()
+
+                    # ── Audit log ──────────────────────────────────────────────
+                    with st.expander("🕐 Audit Log", expanded=False):
+                        try:
+                            log_entries = db.get_action_log(_sid, limit=50)
+                        except Exception:
+                            log_entries = []
+                        if not log_entries:
+                            st.caption("No actions logged yet.")
+                        else:
+                            for entry in log_entries:
+                                _ts     = (entry.get("timestamp") or "")[:16].replace("T", " ")
+                                _act    = entry.get("action", "")
+                                _by     = entry.get("actor") or "system"
+                                _det    = entry.get("detail") or {}
+                                _det_str = (
+                                    f"  —  {_det.get('new_status') or _det.get('note', {})}"
+                                    if _det else ""
+                                )
+                                st.caption(f"`{_ts}`  **{_act}**  by *{_by}*{_det_str}")
 
 
 def render_admin_dashboard():
@@ -4717,6 +5032,8 @@ def main():
         render_results()
     elif stage == "queue":
         render_queue()
+    elif stage == "sessions":
+        render_sessions_dashboard()
     elif stage == "admin":
         if st.session_state.get("user_role") == "admin":
             render_admin_dashboard()
