@@ -13,6 +13,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import hmac
+import html as _html
 import io
 import os
 import re
@@ -2935,7 +2936,7 @@ def render_full_preview():
             "white-space:pre-wrap;max-height:800px;overflow-y:auto;line-height:1.5"
         )
         if orig_text:
-            st.markdown(f'<div style="{_pnl}">{orig_text}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div style="{_pnl}">{_html.escape(orig_text)}</div>', unsafe_allow_html=True)
         else:
             st.info("Original text not available.")
 
@@ -2963,7 +2964,7 @@ def render_full_preview():
             "white-space:pre-wrap;max-height:800px;overflow-y:auto;line-height:1.5"
         )
         if revised_text:
-            st.markdown(f'<div style="{_pnl}">{revised_text}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div style="{_pnl}">{_html.escape(revised_text)}</div>', unsafe_allow_html=True)
         else:
             st.info("Revised CV not yet available.")
 
@@ -3136,11 +3137,11 @@ def render_results():
         _oc, _rc = st.columns(2)
         with _oc:
             st.caption("**Original CV**")
-            st.markdown(f'<div style="{_panel_style}">{_orig_text or "(empty)"}</div>',
+            st.markdown(f'<div style="{_panel_style}">{_html.escape(_orig_text or "(empty)")}</div>',
                         unsafe_allow_html=True)
         with _rc:
             st.caption(f"**{'Edited' if _has_edits else 'Revised'} CV**")
-            st.markdown(f'<div style="{_panel_style}">{_rev_text or "(empty)"}</div>',
+            st.markdown(f'<div style="{_panel_style}">{_html.escape(_rev_text or "(empty)")}</div>',
                         unsafe_allow_html=True)
 
     tier = st.session_state.get("service_tier", "cv_linkedin")
@@ -3359,9 +3360,9 @@ def _render_linkedin_tab():
                 st.session_state.total_output_tokens = (
                     st.session_state.get("total_output_tokens", 0) + _out
                 )
+                st.session_state.linkedin_stale = False
             except Exception as _e:
                 st.warning(f"Could not refresh LinkedIn: {_e}")
-        st.session_state.linkedin_stale = False
 
     li = st.session_state.linkedin_data
     if not li:
