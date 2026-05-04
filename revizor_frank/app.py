@@ -1996,7 +1996,14 @@ def _apply_review_decisions() -> dict:
         _parse_certifications, _parse_languages, _parse_training, _parse_projects,
     )
 
-    final = copy.deepcopy(st.session_state.ai_cv_general or st.session_state.offline_cv or {})
+    # Base: prefer edited_cv so any manual edits made in the Edit stage are preserved
+    # when the user goes back to Review and re-finalises.  Review "edited" decisions
+    # then overlay on top of that base — explicit review edits always win.
+    final = copy.deepcopy(
+        st.session_state.get("edited_cv") or
+        st.session_state.ai_cv_general or
+        st.session_state.offline_cv or {}
+    )
     for key, dec in st.session_state.get("review_decisions", {}).items():
         if dec["status"] != "edited":
             continue
@@ -2058,8 +2065,10 @@ def _apply_review_decisions() -> dict:
             if parsed:
                 final["languages"] = parsed
 
-    # Propagate to session state so all consumers see the updated CV
+    # Propagate: ai_cv_general becomes the merged result; clear edited_cv so the
+    # Edit stage always starts fresh from this authoritative merged version.
     st.session_state.ai_cv_general = final
+    st.session_state.edited_cv = None
     st.session_state.edited_cv_text = _cv_to_text(final)
     st.session_state.linkedin_stale = True
     try:
@@ -2069,11 +2078,48 @@ def _apply_review_decisions() -> dict:
     return final
 
 
+def _resync_review_revised() -> None:
+    """Refresh the 'revised' text shown in each review card to match the current
+    working CV (edited_cv or ai_cv_general).  Called when the user navigates
+    back to the review stage after visiting Edit or Template — preserves all
+    statuses (approved/edited/pending) but updates the diff display so it never
+    shows stale AI output.
+    """
+    decisions = st.session_state.get("review_decisions")
+    if not decisions:
+        return
+    current_cv = (st.session_state.get("edited_cv") or
+                  st.session_state.get("ai_cv_general") or
+                  st.session_state.get("offline_cv") or {})
+    for key, dec in decisions.items():
+        # Only update the displayed text for sections that the user has NOT
+        # manually edited — if they wrote custom text we must not overwrite it.
+        if dec.get("status") == "edited":
+            continue
+        if key == "personal":
+            fresh = _cv_section_text(current_cv, "personal")
+        elif key == "summary":
+            fresh = current_cv.get("summary", "") or ""
+        elif key.startswith("exp_"):
+            idx = int(key.split("_")[1])
+            fresh = _cv_section_text(current_cv, "experience", idx)
+        elif key.startswith("edu_"):
+            idx = int(key.split("_")[1])
+            fresh = _cv_section_text(current_cv, "education", idx)
+        else:
+            fresh = _cv_section_text(current_cv, key)
+        if fresh:
+            dec["revised"] = fresh
+
+
 def render_review_changes():
     """Side-by-side tracked-changes review before final results."""
     _render_top_nav()
     if not st.session_state.get("review_decisions"):
         _init_review_state()
+    else:
+        # User navigated back — refresh displayed text without resetting statuses
+        _resync_review_revised()
 
     _ensure_questions_generated()
 
@@ -2883,14 +2929,19 @@ def render_full_preview():
         else:
             # raw_text absent, too short, or cid-garbage — build from structured fields
             orig_text = _cv_to_plain_text(original_cv)
+        _pnl = (
+            "background:#ffffff;border:1px solid #dee2e6;border-radius:6px;"
+            "padding:1rem;color:#111111;font-family:monospace;font-size:0.82rem;"
+            "white-space:pre-wrap;max-height:800px;overflow-y:auto;line-height:1.5"
+        )
         if orig_text:
-            st.text_area("", value=orig_text, height=800, disabled=True,
-                         label_visibility="collapsed", key="preview_orig")
+            st.markdown(f'<div style="{_pnl}">{orig_text}</div>', unsafe_allow_html=True)
         else:
             st.info("Original text not available.")
 
     with col_rev:
-        st.markdown("### Revised CV")
+        _has_edits = bool(st.session_state.get("edited_cv"))
+        st.markdown(f"### {'✏️ Edited' if _has_edits else 'Revised'} CV")
         from revizor_frank.exporters.txt_exporter import export_txt
         import tempfile
         revised_text = ""
@@ -2906,9 +2957,13 @@ def render_full_preview():
             finally:
                 if os.path.exists(_tmp):
                     os.remove(_tmp)
+        _pnl = (
+            "background:#ffffff;border:1px solid #dee2e6;border-radius:6px;"
+            "padding:1rem;color:#111111;font-family:monospace;font-size:0.82rem;"
+            "white-space:pre-wrap;max-height:800px;overflow-y:auto;line-height:1.5"
+        )
         if revised_text:
-            st.text_area("", value=revised_text, height=800, disabled=True,
-                         label_visibility="collapsed", key="preview_rev")
+            st.markdown(f'<div style="{_pnl}">{revised_text}</div>', unsafe_allow_html=True)
         else:
             st.info("Revised CV not yet available.")
 
@@ -3070,13 +3125,23 @@ def render_results():
         _revised_cv = st.session_state.get("edited_cv") or st.session_state.get("ai_cv_general") or {}
         _orig_text  = _parsed_cv.get("raw_text") or _cv_to_plain_text(_parsed_cv)
         _rev_text   = _cv_to_text(_revised_cv) if _revised_cv else ""
+        _has_edits  = bool(st.session_state.get("edited_cv"))
+        if _has_edits:
+            st.caption("✏️ Revised column reflects your manual edits.")
+        _panel_style = (
+            "background:#ffffff;border:1px solid #dee2e6;border-radius:6px;"
+            "padding:1rem;color:#111111;font-family:monospace;font-size:0.82rem;"
+            "white-space:pre-wrap;max-height:400px;overflow-y:auto;line-height:1.5"
+        )
         _oc, _rc = st.columns(2)
         with _oc:
-            st.text_area("Original CV", value=_orig_text, height=400, disabled=True,
-                         key="cmp_original")
+            st.caption("**Original CV**")
+            st.markdown(f'<div style="{_panel_style}">{_orig_text or "(empty)"}</div>',
+                        unsafe_allow_html=True)
         with _rc:
-            st.text_area("Revised CV", value=_rev_text, height=400, disabled=True,
-                         key="cmp_revised")
+            st.caption(f"**{'Edited' if _has_edits else 'Revised'} CV**")
+            st.markdown(f'<div style="{_panel_style}">{_rev_text or "(empty)"}</div>',
+                        unsafe_allow_html=True)
 
     tier = st.session_state.get("service_tier", "cv_linkedin")
     include_linkedin = (tier != "cv_only")
@@ -3275,13 +3340,15 @@ def _render_cv_preview(cv: dict):
 
 
 def _render_linkedin_tab():
-    # Regenerate if review-page edits invalidated the cached LinkedIn output
+    # Regenerate if review-page edits invalidated the cached LinkedIn output.
+    # Always use edited_cv (manual edits) if present, then ai_cv_general as fallback.
     if st.session_state.get("linkedin_stale") and st.session_state.get("online") and st.session_state.get("ai_cv_general"):
         with st.spinner("Refreshing LinkedIn profile from latest CV edits…"):
             try:
                 from revizor_frank.core import cv_optimizer as _cvo
+                _active_cv = st.session_state.get("edited_cv") or st.session_state.ai_cv_general
                 _li, _in, _out = _cvo.generate_linkedin(
-                    st.session_state.ai_cv_general,
+                    _active_cv,
                     st.session_state.ai_cv_general,
                     st.session_state.get("job_description", ""),
                 )
@@ -3717,7 +3784,16 @@ def _render_edit_cv_tab(include_linkedin: bool) -> None:
     )
 
     if st.session_state.get("edited_cv"):
-        st.info("You have unsaved-to-download edits active. Downloads already use your edited version.")
+        _li_stale = st.session_state.get("linkedin_stale")
+        _ecol1, _ecol2 = st.columns([3, 1])
+        with _ecol1:
+            st.success("✅ Edits saved — downloads use your edited version.")
+        with _ecol2:
+            if _li_stale and include_linkedin and st.session_state.get("online"):
+                if st.button("🔄 Refresh LinkedIn", key="refresh_li_btn"):
+                    with st.spinner("Refreshing LinkedIn…"):
+                        _refresh_linkedin_after_edit()
+                    st.rerun()
 
     with st.expander("👤 Personal Information", expanded=False):
         _edit_section_personal(cv_source, include_linkedin)
