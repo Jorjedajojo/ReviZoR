@@ -207,9 +207,10 @@ def extract_text_from_pdf(file: BinaryIO, api_key: str = "") -> tuple[str, int, 
     key = api_key or ""
     if not key:
         raise ValueError(
-            "This CV is an image-based PDF (no text layer was found by pdfminer or PyMuPDF). "
-            "An Anthropic API key is required to extract text via Claude vision. "
-            "Please add ANTHROPIC_API_KEY to your Streamlit secrets."
+            "This CV is an image-based or scanned PDF (no text layer detected). "
+            "To process it, add ANTHROPIC_API_KEY to your environment — the vision "
+            "API will extract the text automatically. Text-based PDFs, DOCX, and TXT "
+            "files all work without an API key."
         )
 
     b64 = base64.standard_b64encode(data).decode()

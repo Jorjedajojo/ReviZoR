@@ -691,11 +691,9 @@ def render_sidebar():
         st.session_state.online = online
         if not _collapsed:
             if online:
-                st.success(f"🟢 {S['status_online']}")
-            elif ANTHROPIC_API_KEY:
-                st.warning("🟡 API key found but no internet")
+                st.success("🟢 Online — AI optimization active")
             else:
-                st.info(f"⚪ {S['status_offline']}")
+                st.info("⚪ Offline — rule-based mode")
 
         # ── Active candidate card ─────────────────────────────────────────────
         if not _collapsed:
@@ -1149,15 +1147,10 @@ def _run_pipeline():
         _go_to_stage("upload")
         return
 
-    # Explicit API key check — required for image-based PDF vision fallback
-    if not ANTHROPIC_API_KEY or not ANTHROPIC_API_KEY.strip():
-        st.error(
-            "**API key not found in secrets.** "
-            "Add `ANTHROPIC_API_KEY` to your Streamlit secrets (Settings → Secrets). "
-            "It is required to process CVs, including image-based PDFs."
-        )
-        st.session_state.stage = "upload"
-        return
+    # Note: API key is optional. Without it the pipeline runs fully offline
+    # (rule-based optimization, ATS scoring, offline LinkedIn). It is only
+    # needed for image-based PDFs (vision fallback) and AI optimization.
+    # Both paths degrade gracefully when the key is absent.
 
     st.session_state.error = None
     st.session_state.total_input_tokens = 0
