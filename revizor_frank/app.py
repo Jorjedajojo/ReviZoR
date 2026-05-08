@@ -3123,6 +3123,120 @@ def render_select_template():
     _render_bottom_nav("review", "Review", "edit", "Use This Template")
 
 
+# ── n8n review panel ──────────────────────────────────────────────────────────
+
+def _render_n8n_review_panel() -> None:
+    """Show the n8n CV review button and display results once the job completes.
+
+    Shown at the bottom of the Download/Results stage.  When N8N_WEBHOOK_URL is
+    not configured the panel shows a setup hint instead.
+    """
+    from revizor_frank.utils.n8n_client import is_configured, send_for_review
+
+    session_id = st.session_state.get("session_id")
+    if not session_id:
+        return
+
+    st.divider()
+    st.markdown("### 🤖 n8n Automated Review")
+
+    if not is_configured():
+        st.info(
+            "**n8n not connected.** Add `N8N_WEBHOOK_URL` to your `.env` to enable "
+            "automated CV review via your n8n workflow."
+        )
+        return
+
+    # ── Check for existing job ────────────────────────────────────────────────
+    current_job = db.get_latest_n8n_job(session_id)
+    pending = current_job and current_job["status"] in ("pending", "sent", "processing")
+    completed = current_job and current_job["status"] == "completed"
+    failed = current_job and current_job["status"] == "failed"
+
+    if pending:
+        st.info("⏳ Waiting for n8n to finish reviewing… Refresh the page to check.")
+        st.caption(f"Job `{current_job['id'][:8]}…` — sent at "
+                   f"{(current_job.get('sent_at') or '')[:16].replace('T', ' ')}")
+        if st.button("🔄 Check now", key="n8n_check_btn"):
+            st.rerun()
+
+    elif completed and current_job.get("reviewed_cv"):
+        reviewed_cv = current_job["reviewed_cv"]
+        changes     = current_job.get("changes_summary", "")
+
+        st.success("✅ n8n review complete.")
+        if changes:
+            st.caption(f"**Changes made:** {changes}")
+
+        col_apply, col_dismiss = st.columns([1, 1])
+        with col_apply:
+            if st.button("✅ Apply n8n corrections", key="n8n_apply_btn",
+                         type="primary", use_container_width=True):
+                st.session_state.ai_cv_general = reviewed_cv
+                st.session_state.edited_cv = None
+                st.session_state.linkedin_stale = True
+                _save_session_to_db("n8n_corrections_applied")
+                db.log_action(session_id,
+                              st.session_state.get("simple_auth_user") or "user",
+                              "n8n_applied",
+                              {"job_id": current_job["id"], "changes": changes})
+                st.success("Corrections applied. Download buttons now use the corrected CV.")
+                st.rerun()
+        with col_dismiss:
+            if st.button("✖ Dismiss", key="n8n_dismiss_btn", use_container_width=True):
+                db.log_action(session_id,
+                              st.session_state.get("simple_auth_user") or "user",
+                              "n8n_dismissed",
+                              {"job_id": current_job["id"]})
+                st.rerun()
+
+    elif failed:
+        st.error(f"n8n review failed: {current_job.get('error') or 'unknown error'}")
+        if st.button("↩ Retry", key="n8n_retry_btn"):
+            st.session_state.pop("n8n_job_id", None)
+            st.rerun()
+
+    else:
+        # No active job — show the Send button
+        st.caption("Send the original and optimized CV to your n8n workflow for "
+                   "automated comparison and correction.")
+        if st.button("🚀 Send to n8n for Review", key="n8n_send_btn",
+                     type="primary", use_container_width=True):
+            with st.spinner("Sending to n8n…"):
+                try:
+                    actor = (st.session_state.get("simple_auth_user") or
+                             (st.session_state.get("auth_user") or {}).get("username", "system")
+                             or "system")
+                    orig_cv  = st.session_state.get("parsed_cv") or {}
+                    opt_cv   = (st.session_state.get("edited_cv") or
+                                st.session_state.get("ai_cv_general") or
+                                st.session_state.get("offline_cv") or {})
+                    orig_txt = orig_cv.get("raw_text") or _cv_to_plain_text(orig_cv)
+                    opt_txt  = _cv_to_text(opt_cv)
+
+                    job_id = db.create_n8n_job(session_id, actor=actor, payload={
+                        "session_id": session_id,
+                        "filename": st.session_state.get("filename"),
+                    })
+                    send_for_review(
+                        session_id=session_id,
+                        original_cv=orig_cv,
+                        optimized_cv=opt_cv,
+                        original_text=orig_txt,
+                        optimized_text=opt_txt,
+                        actor=actor,
+                        job_id=job_id,
+                    )
+                    db.mark_n8n_job_sent(job_id)
+                    db.log_action(session_id, actor, "n8n_review_sent",
+                                  {"job_id": job_id})
+                    st.success("Sent! n8n is reviewing the CVs. "
+                               "Results will appear here when ready.")
+                    st.rerun()
+                except Exception as _exc:
+                    st.error(f"Failed to send to n8n: {_exc}")
+
+
 # ── Results stage ─────────────────────────────────────────────────────────────
 
 def render_results():
@@ -3283,6 +3397,9 @@ def render_results():
     if _owner_answers_row:
         with tabs[tab_idx]:
             _render_owner_answers_tab(_owner_answers_row)
+
+    # ── n8n CV review panel ───────────────────────────────────────────────────
+    _render_n8n_review_panel()
 
     _render_bottom_nav("edit", "Edit", "upload", "Start Over",
                        next_callback=_start_over)

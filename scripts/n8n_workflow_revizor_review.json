@@ -1,0 +1,113 @@
+{
+  "name": "ReviZoR — CV Review & Callback",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "revizor-review",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Receive CV from ReviZoR",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "revizor-review"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract the CV data sent by ReviZoR\nconst body = $input.first().json.body || $input.first().json;\n\nconst jobId      = body.job_id;\nconst sessionId  = body.session_id;\nconst callbackUrl = body.callback_url;\nconst origCv     = body.original_cv  || {};\nconst optCv      = body.optimized_cv || {};\nconst origText   = body.original_text  || '';\nconst optText    = body.optimized_text || '';\n\n// Basic diff: find sections that changed\nconst changes = [];\nconst sections = ['name','title','email','phone','location','summary'];\nfor (const key of sections) {\n  if (JSON.stringify(origCv[key]) !== JSON.stringify(optCv[key])) {\n    changes.push(key);\n  }\n}\nif ((origCv.experience || []).length !== (optCv.experience || []).length) {\n  changes.push('experience (count changed)');\n}\nif ((origCv.skills?.categories || []).length !== (optCv.skills?.categories || []).length) {\n  changes.push('skills');\n}\n\n// You can add your own verification logic here.\n// For example: check that the name wasn't changed, that bullets are action-verbs,\n// that dates are consistently formatted, etc.\n\n// By default: pass the optimized CV through as reviewed (no changes).\n// Replace `reviewedCv` with your corrected version if you modify anything.\nconst reviewedCv = optCv;   // <-- swap this with your corrected CV dict\nconst changesSummary = changes.length\n  ? `Sections changed by AI: ${changes.join(', ')}`\n  : 'No structural changes detected.';\n\nreturn [{\n  json: {\n    job_id:          jobId,\n    session_id:      sessionId,\n    callback_url:    callbackUrl,\n    reviewed_cv:     reviewedCv,\n    changes_summary: changesSummary,\n    status:          'completed',\n    error:           null,\n  }\n}];"
+      },
+      "id": "compare-node",
+      "name": "Compare & Review CVs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.callback_url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-ReviZoR-Signature",
+              "value": "={{ $json.signature }}"
+            },
+            {
+              "name": "X-ReviZoR-Job",
+              "value": "={{ $json.job_id }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ job_id: $json.job_id, session_id: $json.session_id, status: $json.status, reviewed_cv: $json.reviewed_cv, changes_summary: $json.changes_summary, error: $json.error }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "callback-node",
+      "name": "POST result back to ReviZoR",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [720, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Sign the callback body with the shared secret\n// Set N8N_CALLBACK_SECRET in n8n's environment variables (Settings → Variables)\nconst secret = $env.N8N_CALLBACK_SECRET || '';\nconst item = $input.first().json;\n\nif (!secret) {\n  // No secret configured — skip signing\n  return [{ json: { ...item, signature: '' } }];\n}\n\n// HMAC-SHA256 using the Web Crypto API (available in n8n Code nodes)\nconst body = JSON.stringify({\n  job_id:          item.job_id,\n  session_id:      item.session_id,\n  status:          item.status,\n  reviewed_cv:     item.reviewed_cv,\n  changes_summary: item.changes_summary,\n  error:           item.error,\n});\n\nconst encoder = new TextEncoder();\nconst keyData = encoder.encode(secret);\nconst msgData = encoder.encode(body);\n\nconst cryptoKey = await crypto.subtle.importKey(\n  'raw', keyData, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']\n);\nconst sigBuffer = await crypto.subtle.sign('HMAC', cryptoKey, msgData);\nconst sigHex = Array.from(new Uint8Array(sigBuffer))\n  .map(b => b.toString(16).padStart(2, '0'))\n  .join('');\n\nreturn [{ json: { ...item, signature: sigHex } }];"
+      },
+      "id": "sign-node",
+      "name": "Sign callback (HMAC-SHA256)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [600, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"received\": true, \"job_id\": $('Receive CV from ReviZoR').first().json.body?.job_id }",
+        "options": {}
+      },
+      "id": "respond-node",
+      "name": "Acknowledge receipt",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [480, 460]
+    }
+  ],
+  "connections": {
+    "Receive CV from ReviZoR": {
+      "main": [
+        [
+          { "node": "Compare & Review CVs", "type": "main", "index": 0 },
+          { "node": "Acknowledge receipt", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Compare & Review CVs": {
+      "main": [
+        [{ "node": "Sign callback (HMAC-SHA256)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Sign callback (HMAC-SHA256)": {
+      "main": [
+        [{ "node": "POST result back to ReviZoR", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": ["revizor", "cv-review"]
+}

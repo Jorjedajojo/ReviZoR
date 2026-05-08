@@ -64,6 +64,25 @@ CREATE TABLE IF NOT EXISTS cv_action_log (
 )
 """
 
+_CREATE_N8N_JOBS = """
+CREATE TABLE IF NOT EXISTS n8n_jobs (
+    id               TEXT PRIMARY KEY,
+    session_id       TEXT NOT NULL,
+    created_at       TEXT NOT NULL,
+    sent_at          TEXT,
+    completed_at     TEXT,
+    status           TEXT NOT NULL DEFAULT 'pending',
+    actor            TEXT,
+    payload          TEXT,           -- JSON sent to n8n
+    result           TEXT,           -- JSON received from n8n
+    reviewed_cv      TEXT,           -- JSON: corrected CVData from n8n
+    changes_summary  TEXT,
+    error            TEXT
+)
+"""
+
+N8N_JOB_STATUSES = frozenset({"pending", "sent", "processing", "completed", "failed"})
+
 LIFECYCLE_STATUSES = frozenset(
     {"in_progress", "awaiting_info", "in_delivery", "expired", "completed"}
 )
@@ -86,6 +105,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
             except sqlite3.OperationalError:
                 pass  # column already exists (concurrent migration)
     conn.execute(_CREATE_ACTION_LOG)
+    conn.execute(_CREATE_N8N_JOBS)
     conn.commit()
 
 
@@ -390,3 +410,115 @@ def get_session_counts() -> dict[str, int]:
         counts[row["lifecycle_status"]] = row["n"]
     counts["total"] = sum(counts.values())
     return counts
+
+
+# ── n8n job management ────────────────────────────────────────────────────────
+
+def create_n8n_job(
+    session_id: str,
+    actor: str = "system",
+    payload: dict | None = None,
+    job_id: str | None = None,
+) -> str:
+    """Create a pending n8n job record. Returns the job_id."""
+    jid = job_id or _id()
+    ts = _now()
+    with _connect() as conn:
+        conn.execute(
+            """INSERT INTO n8n_jobs
+               (id, session_id, created_at, status, actor, payload)
+               VALUES (?, ?, ?, 'pending', ?, ?)""",
+            (jid, session_id, ts, actor, json.dumps(payload) if payload else None),
+        )
+    return jid
+
+
+def mark_n8n_job_sent(job_id: str) -> None:
+    """Mark the job as sent to n8n (webhook fired successfully)."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE n8n_jobs SET status='sent', sent_at=? WHERE id=?",
+            (_now(), job_id),
+        )
+
+
+def complete_n8n_job(
+    job_id: str,
+    session_id: str,
+    status: str = "completed",
+    reviewed_cv: dict | None = None,
+    changes_summary: str = "",
+    result: dict | None = None,
+    error: str | None = None,
+) -> None:
+    """Store n8n callback result. Called by the FastAPI callback endpoint."""
+    ts = _now()
+    with _connect() as conn:
+        conn.execute(
+            """UPDATE n8n_jobs
+               SET status=?, completed_at=?, reviewed_cv=?,
+                   changes_summary=?, result=?, error=?
+               WHERE id=?""",
+            (
+                status, ts,
+                json.dumps(reviewed_cv) if reviewed_cv else None,
+                changes_summary,
+                json.dumps(result) if result else None,
+                error,
+                job_id,
+            ),
+        )
+    # Log the completion against the session audit trail
+    log_action(session_id, "n8n", "n8n_review_completed",
+               {"job_id": job_id, "status": status,
+                "changes": bool(reviewed_cv)})
+
+
+def get_n8n_job(job_id: str) -> dict | None:
+    """Return a single n8n job with parsed JSON fields."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM n8n_jobs WHERE id=?", (job_id,)
+        ).fetchone()
+    if not row:
+        return None
+    d = dict(row)
+    for key in ("payload", "result", "reviewed_cv"):
+        d[key] = _load(d.get(key))
+    return d
+
+
+def get_latest_n8n_job(session_id: str) -> dict | None:
+    """Return the most recent n8n job for a session."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM n8n_jobs WHERE session_id=? ORDER BY created_at DESC LIMIT 1",
+            (session_id,),
+        ).fetchone()
+    if not row:
+        return None
+    d = dict(row)
+    for key in ("payload", "result", "reviewed_cv"):
+        d[key] = _load(d.get(key))
+    return d
+
+
+def list_n8n_jobs(session_id: str | None = None, limit: int = 50) -> list[dict]:
+    """List n8n jobs, optionally filtered to one session."""
+    with _connect() as conn:
+        if session_id:
+            rows = conn.execute(
+                "SELECT * FROM n8n_jobs WHERE session_id=? ORDER BY created_at DESC LIMIT ?",
+                (session_id, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM n8n_jobs ORDER BY created_at DESC LIMIT ?", (limit,)
+            ).fetchall()
+    result = []
+    for row in rows:
+        d = dict(row)
+        for key in ("payload", "result", "reviewed_cv"):
+            d[key] = _load(d.get(key))
+        result.append(d)
+    return result

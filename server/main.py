@@ -24,6 +24,7 @@ from server import database as db
 from server.auth import security as sec
 from server.auth.router import router as auth_router
 from server.admin.router import router as admin_router
+from server.n8n.router import router as n8n_router
 
 
 # ── Rate limiter ───────────────────────────────────────────────────────────────
@@ -54,6 +55,7 @@ app.add_middleware(
 # ── Routers ───────────────────────────────────────────────────────────────────
 app.include_router(auth_router)
 app.include_router(admin_router)
+app.include_router(n8n_router)
 
 
 # ── Rate-limit auth endpoints ─────────────────────────────────────────────────
